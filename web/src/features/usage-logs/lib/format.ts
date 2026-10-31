@@ -201,13 +201,16 @@ export function getTimeColor(
 }
 
 /**
- * Get first-response-token color based on latency (in seconds)
+ * Get first-response-token color based on latency in seconds.
+ *
+ * Latency below 10 seconds is successful, 10-20 seconds is a warning, and
+ * 20 seconds or more is dangerous.
  */
 export function getFirstResponseTimeColor(
   seconds: number
 ): 'success' | 'warning' | 'danger' {
-  if (seconds < 5) return 'success'
-  if (seconds < 10) return 'warning'
+  if (seconds < 10) return 'success'
+  if (seconds < 20) return 'warning'
   return 'danger'
 }
 
