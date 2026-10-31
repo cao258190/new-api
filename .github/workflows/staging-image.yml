@@ -18,10 +18,10 @@ concurrency:
 # Production publishing requires a separate, protected registry workflow.
 # Vulnerability scanning is disabled at the repository owner's request.
 env:
-  SOURCE_SHA: 2357812763df2f272c3c69af17ca470609dc2ce6
+  SOURCE_SHA: dc5db12377570c2dd6b461ab205d8f547699fb39
   UPSTREAM_SHA: ea343c4a81151bfd537d33b66527c25fa21a1112
-  RELEASE_VERSION: custom-v2026.10.31.1-rc.1
-  IMAGE_REF: new-api-staging:custom-v2026.10.31.1-rc.1
+  RELEASE_VERSION: custom-v2026.10.31.1-rc.2
+  IMAGE_REF: new-api-staging:custom-v2026.10.31.1-rc.2
 
 jobs:
   build:
@@ -49,6 +49,19 @@ jobs:
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           printf '%s\n' "$RELEASE_VERSION" > VERSION
           mkdir -p "$RUNNER_TEMP/release"
+
+      - name: Set up Bun for frontend quality checks
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.4'
+
+      - name: Check customized frontend lint and formatting
+        working-directory: web
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bunx --no-install oxlint -c .oxlintrc.json src/features/usage-logs/lib/format.ts src/features/usage-logs/lib/__tests__/timing-colors.test.ts
+          bunx --no-install oxfmt -c .oxfmtrc.json --check src/features/usage-logs/lib/format.ts src/features/usage-logs/lib/__tests__/timing-colors.test.ts
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
