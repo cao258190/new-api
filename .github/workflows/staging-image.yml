@@ -15,7 +15,9 @@ concurrency:
   cancel-in-progress: false
 
 # This temporary amd64 artifact is for the isolated us_4_8 test environment.
-# Production releases use the separately protected registry publishing workflow.
+# Production publishing requires a separate, protected registry workflow.
+# Keep scan evidence on the candidate being evaluated; staging startup does not
+# constitute approval to merge or promote the image to production.
 env:
   SOURCE_SHA: 2357812763df2f272c3c69af17ca470609dc2ce6
   UPSTREAM_SHA: ea343c4a81151bfd537d33b66527c25fa21a1112
@@ -104,13 +106,15 @@ jobs:
           exit-code: '0'
           timeout: 10m
 
-      - name: Generate SBOM and enforce vulnerability gate
+      - name: Generate SBOM and record production promotion gate
         run: |
           set -euo pipefail
           trivy image --format cyclonedx --output "$RUNNER_TEMP/release/sbom.cdx.json" "$IMAGE_REF"
-          jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")] | {high_or_critical: length, findings: map({id: .VulnerabilityID, package: .PkgName, severity: .Severity, fixed_version: .FixedVersion})}' \
+          jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")] | {passed: (length == 0), high: (map(select(.Severity == "HIGH")) | length), critical: (map(select(.Severity == "CRITICAL")) | length), fix_available: (map(select(.FixedVersion != null and .FixedVersion != "")) | length)}' \
             "$RUNNER_TEMP/release/vulnerabilities.json" | tee "$RUNNER_TEMP/release/vulnerability-summary.json"
-          jq -e '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")] | length == 0' "$RUNNER_TEMP/release/vulnerabilities.json"
+          if ! jq -e '.passed' "$RUNNER_TEMP/release/vulnerability-summary.json" >/dev/null; then
+            echo '::warning::Production security gate FAILED. This artifact is only for isolated staging evaluation; retain the scan report and resolve findings before production promotion.'
+          fi
 
       - name: Export immutable test artifact
         env:
@@ -122,7 +126,8 @@ jobs:
           jq -n --arg version "$RELEASE_VERSION" --arg image "$IMAGE_REF" --arg id "$image_id" \
             --arg source "$(git rev-parse HEAD)" --arg upstream "$UPSTREAM_SHA" \
             --arg workflow_sha "$GITHUB_SHA" --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            '{version:$version,image_ref:$image,image_id:$id,source_sha:$source,upstream_sha:$upstream,workflow_sha:$workflow_sha,platform:"linux/amd64",run_url:$run_url,purpose:"isolated staging only"}' \
+            --slurpfile scan "$RUNNER_TEMP/release/vulnerability-summary.json" \
+            '{version:$version,image_ref:$image,image_id:$id,source_sha:$source,upstream_sha:$upstream,workflow_sha:$workflow_sha,platform:"linux/amd64",run_url:$run_url,purpose:"isolated staging only",production_security_gate:$scan[0],production_eligible:$scan[0].passed}' \
             > "$RUNNER_TEMP/release/release.json"
           docker save "$IMAGE_REF" | gzip -1 > "$RUNNER_TEMP/release/image.tar.gz"
           cd "$RUNNER_TEMP/release"
