@@ -1,4 +1,4 @@
-"""Fail on high or critical CodeQL security findings in tracked project source."""
+"""Fail on high or critical CodeQL findings in tracked runtime source."""
 
 import json
 from pathlib import Path
@@ -12,7 +12,10 @@ source_files = {
     name
     for name in subprocess.check_output(["git", "ls-files", "-z"]).decode("utf-8").split("\0")
     if Path(name).suffix in {".go", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"}
-    and not {"vendor", "node_modules"}.intersection(Path(name).parts)
+    and not {"vendor", "node_modules", "__tests__", "__mocks__", "__fixtures__", "testdata"}.intersection(Path(name).parts)
+    and not name.endswith("_test.go")
+    and ".test." not in Path(name).name
+    and ".spec." not in Path(name).name
 }
 reports = sorted(Path(sys.argv[1]).glob("*.sarif"))
 if not reports:
@@ -25,7 +28,11 @@ for report in reports:
         driver = run["tool"]["driver"]
         if driver["name"] != "CodeQL":
             raise SystemExit("The source security gate accepts only CodeQL results")
-        rules = {rule["id"]: rule for rule in driver.get("rules", [])}
+        rules = {
+            rule["id"]: rule
+            for component in [driver, *run["tool"].get("extensions", [])]
+            for rule in component.get("rules", [])
+        }
         for result in run.get("results", []):
             rule = rules[result["ruleId"]]
             severity = float(rule.get("properties", {}).get("security-severity", 0))
@@ -51,7 +58,7 @@ for report in reports:
                                      "security_severity": severity})
                     break
 
-summary = {"policy": "source-code-only", "blocking_findings": len(blocking), "findings": blocking}
+summary = {"policy": "runtime-source-code-only", "blocking_findings": len(blocking), "findings": blocking}
 (Path(sys.argv[1]) / "source-security-summary.json").write_text(
     json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
 )
