@@ -16,8 +16,7 @@ concurrency:
 
 # This temporary amd64 artifact is for the isolated us_4_8 test environment.
 # Production publishing requires a separate, protected registry workflow.
-# Dependency and base-image CVEs are advisory. Source findings are enforced by
-# code-security.yml; image construction does not decide merge eligibility.
+# Vulnerability scanning is disabled at the repository owner's request.
 env:
   SOURCE_SHA: 2357812763df2f272c3c69af17ca470609dc2ce6
   UPSTREAM_SHA: ea343c4a81151bfd537d33b66527c25fa21a1112
@@ -63,7 +62,7 @@ jobs:
           load: true
           tags: ${{ env.IMAGE_REF }}
           # Docker save cannot preserve registry attestations. Keep the build
-          # record, exact source, image ID, SBOM and checksums with this artifact.
+          # record, exact source, image ID and checksums with this artifact.
           provenance: false
           labels: |
             org.opencontainers.image.source=https://github.com/cao258190/new-api
@@ -95,25 +94,6 @@ jobs:
           docker logs --tail 80 new-api-smoke
           exit 1
 
-      - name: Report dependency and base-image vulnerabilities
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          version: v0.70.0
-          image-ref: ${{ env.IMAGE_REF }}
-          scanners: vuln
-          format: json
-          output: ${{ runner.temp }}/release/vulnerabilities.json
-          exit-code: '0'
-          timeout: 10m
-
-      - name: Generate SBOM and summarize advisory dependency report
-        run: |
-          set -euo pipefail
-          trivy image --format cyclonedx --output "$RUNNER_TEMP/release/sbom.cdx.json" "$IMAGE_REF"
-          jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")] | {blocking: false, policy: "report-only", high: (map(select(.Severity == "HIGH")) | length), critical: (map(select(.Severity == "CRITICAL")) | length), fix_available: (map(select(.FixedVersion != null and .FixedVersion != "")) | length)}' \
-            "$RUNNER_TEMP/release/vulnerabilities.json" | tee "$RUNNER_TEMP/release/vulnerability-summary.json"
-          echo '::notice::Dependency and base-image findings are advisory and do not block merges. Code security is checked separately.'
-
       - name: Export immutable test artifact
         env:
           BUILD_METADATA: ${{ steps.build.outputs.metadata }}
@@ -124,12 +104,11 @@ jobs:
           jq -n --arg version "$RELEASE_VERSION" --arg image "$IMAGE_REF" --arg id "$image_id" \
             --arg source "$(git rev-parse HEAD)" --arg upstream "$UPSTREAM_SHA" \
             --arg workflow_sha "$GITHUB_SHA" --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            --slurpfile scan "$RUNNER_TEMP/release/vulnerability-summary.json" \
-            '{version:$version,image_ref:$image,image_id:$id,source_sha:$source,upstream_sha:$upstream,workflow_sha:$workflow_sha,platform:"linux/amd64",run_url:$run_url,purpose:"isolated staging only",dependency_scan:$scan[0],source_security_gate:{status:"checked-separately",workflow:"code-security.yml"}}' \
+            '{version:$version,image_ref:$image,image_id:$id,source_sha:$source,upstream_sha:$upstream,workflow_sha:$workflow_sha,platform:"linux/amd64",run_url:$run_url,purpose:"isolated staging only",security_scanning:{enabled:false,policy:"disabled-by-user"}}' \
             > "$RUNNER_TEMP/release/release.json"
           docker save "$IMAGE_REF" | gzip -1 > "$RUNNER_TEMP/release/image.tar.gz"
           cd "$RUNNER_TEMP/release"
-          sha256sum image.tar.gz release.json build-metadata.json sbom.cdx.json vulnerabilities.json vulnerability-summary.json smoke-status.json > SHA256SUMS
+          sha256sum image.tar.gz release.json build-metadata.json smoke-status.json > SHA256SUMS
 
       - name: Upload test image and evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.6.2
@@ -140,7 +119,7 @@ jobs:
           compression-level: 0
           retention-days: 30
 
-      - name: Upload scan reports on failure
+      - name: Upload build diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.6.2
         with:
