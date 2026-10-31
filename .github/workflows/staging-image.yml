@@ -1,0 +1,147 @@
+name: Staging image artifact
+
+on:
+  push:
+    branches: [codex/staging-us-4-8]
+    paths: [.github/workflows/staging-image.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: staging-image-us-4-8
+  cancel-in-progress: false
+
+# This temporary amd64 artifact is for the isolated us_4_8 test environment.
+# Production releases use the separately protected registry publishing workflow.
+env:
+  SOURCE_SHA: 2357812763df2f272c3c69af17ca470609dc2ce6
+  UPSTREAM_SHA: ea343c4a81151bfd537d33b66527c25fa21a1112
+  RELEASE_VERSION: custom-v2026.10.31.1-rc.1
+  IMAGE_REF: new-api-staging:custom-v2026.10.31.1-rc.1
+
+jobs:
+  build:
+    if: github.repository == 'cao258190/new-api' && github.ref == 'refs/heads/codex/staging-us-4-8'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Verify candidate CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$SOURCE_SHA&per_page=100" > "$RUNNER_TEMP/candidate-runs.json"
+          jq -e --arg sha "$SOURCE_SHA" 'any(.workflow_runs[]; .head_sha == $sha and .name == "CI" and .conclusion == "success")' "$RUNNER_TEMP/candidate-runs.json"
+
+      - name: Checkout reviewed source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+
+      - name: Prepare version
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          printf '%s\n' "$RELEASE_VERSION" > VERSION
+          mkdir -p "$RUNNER_TEMP/release"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
+
+      - name: Build test image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.IMAGE_REF }}
+          # Docker save cannot preserve registry attestations. Keep the build
+          # record, exact source, image ID, SBOM and checksums with this artifact.
+          provenance: false
+          labels: |
+            org.opencontainers.image.source=https://github.com/cao258190/new-api
+            org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
+            org.opencontainers.image.version=${{ env.RELEASE_VERSION }}
+            org.opencontainers.image.title=NewAPI staging
+            org.opencontainers.image.vendor=QuantumNous
+          cache-from: type=gha,scope=staging-amd64
+          cache-to: type=gha,mode=max,scope=staging-amd64
+
+      - name: Verify version and fresh SQLite startup
+        run: |
+          set -euo pipefail
+          test "$(docker run --rm "$IMAGE_REF" --version)" = "$RELEASE_VERSION"
+          docker run -d --name new-api-smoke -p 127.0.0.1:3000:3000 \
+            -e SESSION_SECRET="$(openssl rand -hex 32)" \
+            -e CRYPTO_SECRET="$(openssl rand -hex 32)" \
+            -e TRUSTED_PROXIES=none "$IMAGE_REF"
+          trap 'docker rm -f new-api-smoke >/dev/null' EXIT
+          for attempt in {1..60}; do
+            if curl -fsS http://127.0.0.1:3000/api/status > "$RUNNER_TEMP/release/smoke-status.json"; then
+              jq -e --arg version "$RELEASE_VERSION" '.success == true and .data.version == $version' "$RUNNER_TEMP/release/smoke-status.json"
+              curl -fsS http://127.0.0.1:3000/ > "$RUNNER_TEMP/index.html"
+              test -s "$RUNNER_TEMP/index.html"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs --tail 80 new-api-smoke
+          exit 1
+
+      - name: Scan image vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.70.0
+          image-ref: ${{ env.IMAGE_REF }}
+          scanners: vuln
+          format: json
+          output: ${{ runner.temp }}/release/vulnerabilities.json
+          exit-code: '0'
+          timeout: 10m
+
+      - name: Generate SBOM and enforce vulnerability gate
+        run: |
+          set -euo pipefail
+          trivy image --format cyclonedx --output "$RUNNER_TEMP/release/sbom.cdx.json" "$IMAGE_REF"
+          jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")] | {high_or_critical: length, findings: map({id: .VulnerabilityID, package: .PkgName, severity: .Severity, fixed_version: .FixedVersion})}' \
+            "$RUNNER_TEMP/release/vulnerabilities.json" | tee "$RUNNER_TEMP/release/vulnerability-summary.json"
+          jq -e '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")] | length == 0' "$RUNNER_TEMP/release/vulnerabilities.json"
+
+      - name: Export immutable test artifact
+        env:
+          BUILD_METADATA: ${{ steps.build.outputs.metadata }}
+        run: |
+          set -euo pipefail
+          image_id=$(docker image inspect "$IMAGE_REF" --format '{{.Id}}')
+          printf '%s\n' "$BUILD_METADATA" > "$RUNNER_TEMP/release/build-metadata.json"
+          jq -n --arg version "$RELEASE_VERSION" --arg image "$IMAGE_REF" --arg id "$image_id" \
+            --arg source "$(git rev-parse HEAD)" --arg upstream "$UPSTREAM_SHA" \
+            --arg workflow_sha "$GITHUB_SHA" --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            '{version:$version,image_ref:$image,image_id:$id,source_sha:$source,upstream_sha:$upstream,workflow_sha:$workflow_sha,platform:"linux/amd64",run_url:$run_url,purpose:"isolated staging only"}' \
+            > "$RUNNER_TEMP/release/release.json"
+          docker save "$IMAGE_REF" | gzip -1 > "$RUNNER_TEMP/release/image.tar.gz"
+          cd "$RUNNER_TEMP/release"
+          sha256sum image.tar.gz release.json build-metadata.json sbom.cdx.json vulnerabilities.json vulnerability-summary.json smoke-status.json > SHA256SUMS
+
+      - name: Upload test image and evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.6.2
+        with:
+          name: new-api-staging-amd64-${{ env.RELEASE_VERSION }}
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Upload scan reports on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.6.2
+        with:
+          name: new-api-staging-failure-${{ github.run_id }}
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: ignore
+          retention-days: 7
