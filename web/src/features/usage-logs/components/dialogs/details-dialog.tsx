@@ -1237,7 +1237,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
               requestRules={other.request_rules}
               hideCacheColumns={!hasAnyCacheTokens(other)}
               usageSchema={billingUsageSchema}
-              usageFacts={other.usage_facts}
+              usageFacts={other.usage_facts ?? other.billing_tokens}
             />
           </DetailSection>
         )}
