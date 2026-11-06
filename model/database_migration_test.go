@@ -85,7 +85,7 @@ func TestDatabaseMigrationLifecycle(t *testing.T) {
 		}).Error)
 		require.NoError(t, DB.Create(&SubscriptionPlan{Title: "迁移套餐", PriceAmount: 1.234567}).Error)
 		require.NoError(t, LOG_DB.Create(&Log{
-			UserId: user.Id, CreatedAt: 1700000000, Type: ConsumeLogType,
+			UserId: user.Id, CreatedAt: 1700000000, Type: LogTypeConsume,
 			Content: "保留已有日志", ModelName: "migration-model", Quota: 12345,
 		}).Error)
 		indexes := map[string]map[string][]string{
