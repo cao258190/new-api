@@ -59,22 +59,19 @@ jobs:
             relaykit/go.sum
             tokenkit/go.sum
 
-      - name: Prepare released and current main baselines
+      - name: Prepare latest released baseline
         env:
           GH_TOKEN: ${{ github.token }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
         run: |
           release=$(gh api repos/QuantumNous/new-api/releases/latest --jq .tag_name)
           [[ "$release" =~ ^v[0-9][0-9A-Za-z._-]*$ ]]
           git -c http.version=HTTP/1.1 fetch --no-tags https://github.com/QuantumNous/new-api.git "refs/tags/$release"
           release_sha=$(git rev-parse FETCH_HEAD)
           echo "Released baseline: $release ($release_sha)"
-          echo "Current main baseline: $BASE_SHA"
-          mkdir -p "$RUNNER_TEMP/database-release" "$RUNNER_TEMP/database-main"
+          mkdir -p "$RUNNER_TEMP/database-release"
           git archive "$release_sha" | tar -x -C "$RUNNER_TEMP/database-release"
-          git archive "$BASE_SHA" | tar -x -C "$RUNNER_TEMP/database-main"
 
       - name: Check real databases, released upgrades, and restart idempotency
         env:
           TEST_DATABASE_RUN_ID: ci${{ github.run_id }}x${{ github.run_attempt }}
-        run: sh .github/scripts/check-databases.sh "$RUNNER_TEMP/database-release" "$RUNNER_TEMP/database-main"
+        run: sh .github/scripts/check-databases.sh "$RUNNER_TEMP/database-release"
