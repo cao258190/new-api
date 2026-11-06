@@ -33,7 +33,14 @@ export interface ApiResponse<T = unknown> {
  * Standard API response types
  */
 export type TopupInfoResponse = ApiResponse<TopupInfo>
-export type RedemptionResponse = ApiResponse<number>
+export type RedemptionResponse = ApiResponse<
+  | number
+  | {
+      type: 'subscription'
+      plan_id: number
+      plan_title: string
+    }
+>
 export type AmountResponse = ApiResponse<string>
 export type PaymentResponse = ApiResponse<Record<string, unknown>> & {
   url?: string
@@ -41,6 +48,31 @@ export type PaymentResponse = ApiResponse<Record<string, unknown>> & {
 export type StripePaymentResponse = ApiResponse<{ pay_link: string }>
 export type AffiliateCodeResponse = ApiResponse<string>
 export type AffiliateTransferResponse = ApiResponse
+/** A settled referral rebate with rate and wallet allocation frozen at payment time. */
+export interface AffiliateReward {
+  id: number
+  inviter_id: number
+  invitee_id: number
+  invitee_name: string
+  source_type: 'topup' | 'redemption'
+  source_id: number
+  rate_bps: number
+  base_quota: number
+  reward_quota: number
+  credited_quota: number
+  pending_quota: number
+  created_at: number
+}
+
+/** One page of rewards earned by the signed-in inviter. */
+export interface AffiliateRewardsPage {
+  items: AffiliateReward[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export type AffiliateRewardsResponse = ApiResponse<AffiliateRewardsPage>
 export type CreemPaymentResponse = ApiResponse<{ checkout_url: string }>
 export type WaffoPaymentResponse = ApiResponse<
   { payment_url?: string } | string
@@ -156,6 +188,8 @@ export interface TopupInfo {
   payment_compliance_confirmed?: boolean
   /** Current compliance terms version */
   payment_compliance_terms_version?: string
+  /** Current inviter rate in basis points, after compliance gating. */
+  affiliate_reward_rate?: number
 }
 
 /**

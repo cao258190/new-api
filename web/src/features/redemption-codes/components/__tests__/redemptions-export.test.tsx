@@ -52,11 +52,11 @@ function captureDownloads() {
       revokeObjectURL: vi.fn(),
     })
   )
-  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(
-    function (this: HTMLAnchorElement) {
-      downloads.push({ filename: this.download, blob: currentBlob })
-    }
-  )
+  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+    this: HTMLAnchorElement
+  ) {
+    downloads.push({ filename: this.download, blob: currentBlob })
+  })
   return downloads
 }
 
@@ -233,6 +233,63 @@ test('successful batch creation opens export with returned codes and the configu
   )
   expect(await readDownload(downloads[0])).toBe(
     'batch\tcreatedA\t¥2,000\nbatch\tcreatedB\t¥2,000\n'
+  )
+})
+
+test('creating a subscription code exports its plan and sends no quota', async () => {
+  const downloads = captureDownloads()
+  const user = userEvent.setup()
+  vi.spyOn(api, 'get').mockResolvedValue({
+    data: {
+      success: true,
+      data: [{ plan: { id: 7, title: 'Pro plan', enabled: true } }],
+    },
+  })
+  const create = vi.spyOn(api, 'post').mockResolvedValue({
+    data: { success: true, data: ['subscriptionCode'] },
+  })
+
+  render(<CreateDrawer />)
+  const createDialog = screen.getByRole('dialog', {
+    name: 'Create Redemption Code',
+  })
+  fireEvent.change(within(createDialog).getByLabelText('Name'), {
+    target: { value: 'gift' },
+  })
+  await user.click(
+    within(createDialog).getByRole('combobox', { name: 'Redemption Type' })
+  )
+  await user.click(screen.getByRole('option', { name: 'Subscription Code' }))
+  await user.click(
+    await within(createDialog).findByRole('combobox', {
+      name: 'Subscription Plan',
+    })
+  )
+  await user.click(await screen.findByRole('option', { name: 'Pro plan' }))
+  await user.click(
+    within(createDialog).getByRole('button', { name: 'Save changes' })
+  )
+
+  await waitFor(() => expect(create).toHaveBeenCalledOnce())
+  expect(create).toHaveBeenCalledWith(
+    '/api/redemption/',
+    expect.objectContaining({ type: 'subscription', plan_id: 7, quota: 0 })
+  )
+  const exportDialog = await screen.findByRole('dialog', {
+    name: 'Redemption codes created',
+  })
+  await user.click(
+    within(exportDialog).getByRole('checkbox', { name: 'Save as a file' })
+  )
+  expect(
+    within(exportDialog).getByRole('checkbox', { name: 'Include plan' })
+  ).toBeChecked()
+  expect(
+    within(exportDialog).queryByRole('checkbox', { name: 'Include quota' })
+  ).not.toBeInTheDocument()
+  await user.click(within(exportDialog).getByRole('button', { name: 'Done' }))
+  expect(await readDownload(downloads[0])).toBe(
+    'gift\tsubscriptionCode\tPro plan\n'
   )
 })
 

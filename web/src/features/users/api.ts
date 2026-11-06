@@ -120,8 +120,8 @@ export async function createUser(
 }
 
 /**
- * Update an existing user. Changing the password or the admin permission
- * matrix requires an `admin.user.update` proof.
+ * Update an existing user. Changing the password, admin permission matrix, or
+ * personal referral rebate rate requires an `admin.user.update` proof.
  */
 export async function updateUser(
   data: UserFormData & { id: number },

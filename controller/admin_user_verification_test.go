@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -115,6 +116,17 @@ func TestAdminUserRiskOperationsRequireProofBeforeMutation(t *testing.T) {
 			},
 		},
 		{
+			name: "personal referral rebate rate", method: http.MethodPut, path: "/api/user/", handler: UpdateUser,
+			body: func(target *model.User) string {
+				return fmt.Sprintf(`{"id":%d,"username":"managed-user","aff_reward_rate":0}`, target.Id)
+			},
+			unchanged: func(t *testing.T, target *model.User) {
+				stored, err := model.GetUserById(target.Id, false)
+				require.NoError(t, err)
+				assert.Nil(t, stored.AffRewardRate)
+			},
+		},
+		{
 			name: "create administrator", method: http.MethodPost, path: "/api/user/", handler: CreateUser,
 			body: func(*model.User) string { return `{"username":"new-admin","password":"admin-password-1","role":10}` },
 			unchanged: func(t *testing.T, _ *model.User) {
@@ -208,6 +220,94 @@ func TestAdminUserRoutineEditsDoNotRequireProof(t *testing.T) {
 	var count int64
 	require.NoError(t, model.DB.Model(&model.User{}).Where("username = ?", "new-member").Count(&count).Error)
 	assert.EqualValues(t, 1, count)
+}
+
+func TestAdminUserAffiliateRateOverrideRequiresProofAndCanReturnToDefault(t *testing.T) {
+	_, identity, target := setupAdminUserTest(t)
+	payment := operation_setting.GetPaymentSetting()
+	previousConfirmed, previousVersion := payment.ComplianceConfirmed, payment.ComplianceTermsVersion
+	payment.ComplianceConfirmed = true
+	payment.ComplianceTermsVersion = operation_setting.CurrentComplianceTermsVersion
+	t.Cleanup(func() {
+		payment.ComplianceConfirmed, payment.ComplianceTermsVersion = previousConfirmed, previousVersion
+	})
+
+	operation := service.VerificationOperation{
+		Scope:   service.VerificationScopeAdminUserUpdate,
+		Context: []byte(fmt.Sprintf(`{"user_id":%d}`, target.Id)),
+	}
+	proof := issueSecurityEnrollmentProof(t, identity, operation, service.VerificationMethodPassword)
+	response := adminUserRequest(http.MethodPut, "/api/user/", fmt.Sprintf(`{"id":%d,"username":"managed-user","group":"default","aff_reward_rate":1250}`, target.Id), proof, identity, common.RoleAdminUser, nil, UpdateUser)
+	var result securityEnrollmentResponse
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+	require.True(t, result.Success, response.Body.String())
+	stored, err := model.GetUserById(target.Id, false)
+	require.NoError(t, err)
+	require.NotNil(t, stored.AffRewardRate)
+	assert.Equal(t, 1250, *stored.AffRewardRate)
+
+	response = adminUserRequest(http.MethodPut, "/api/user/", fmt.Sprintf(`{"id":%d,"username":"managed-user","group":"default","aff_reward_rate":2500}`, target.Id), proof, identity, common.RoleAdminUser, nil, UpdateUser)
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+	assert.False(t, result.Success, "a consumed proof cannot change the rate again")
+	stored, err = model.GetUserById(target.Id, false)
+	require.NoError(t, err)
+	require.NotNil(t, stored.AffRewardRate)
+	assert.Equal(t, 1250, *stored.AffRewardRate)
+
+	response = adminUserRequest(http.MethodPut, "/api/user/", fmt.Sprintf(`{"id":%d,"username":"managed-user","group":"default","display_name":"Renamed"}`, target.Id), "", identity, common.RoleAdminUser, nil, UpdateUser)
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+	require.True(t, result.Success, response.Body.String())
+	stored, err = model.GetUserById(target.Id, false)
+	require.NoError(t, err)
+	require.NotNil(t, stored.AffRewardRate)
+	assert.Equal(t, 1250, *stored.AffRewardRate, "omitting the override must preserve it")
+
+	proof = issueSecurityEnrollmentProof(t, identity, operation, service.VerificationMethodPassword)
+	response = adminUserRequest(http.MethodPut, "/api/user/", fmt.Sprintf(`{"id":%d,"username":"managed-user","group":"default","aff_reward_rate":null}`, target.Id), proof, identity, common.RoleAdminUser, nil, UpdateUser)
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+	require.True(t, result.Success, response.Body.String())
+	stored, err = model.GetUserById(target.Id, false)
+	require.NoError(t, err)
+	assert.Nil(t, stored.AffRewardRate)
+}
+
+func TestAffiliateRewardsAPIRestrictsOwnerAndValidatesPagination(t *testing.T) {
+	operator, identity, target := setupAdminUserTest(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.AffiliateReward{}))
+	require.NoError(t, model.DB.Create(&[]model.AffiliateReward{
+		{InviterId: operator.Id, InviteeId: target.Id, SourceType: model.AffiliateRewardSourceTopUp, SourceId: 1, RateBps: 1250, BaseQuota: 100, RewardQuota: 12},
+		{InviterId: operator.Id, InviteeId: target.Id, SourceType: model.AffiliateRewardSourceRedemption, SourceId: 1, RateBps: 1250, BaseQuota: 200, RewardQuota: 25},
+		{InviterId: target.Id, InviteeId: operator.Id, SourceType: model.AffiliateRewardSourceTopUp, SourceId: 2, RewardQuota: 999},
+	}).Error)
+	var result struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Items []model.AffiliateReward `json:"items"`
+			Total int                     `json:"total"`
+		} `json:"data"`
+	}
+	for _, query := range []string{
+		fmt.Sprintf("?p=1&page_size=1&inviter_id=%d", target.Id),
+		"?source_type=redemption",
+	} {
+		response := securityEnrollmentRequest(http.MethodGet, "/api/user/aff/rewards"+query, "", "", identity, GetAffiliateRewards)
+		require.Equal(t, http.StatusOK, response.Code)
+		require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+		require.True(t, result.Success)
+		require.Len(t, result.Data.Items, 1)
+		assert.Equal(t, operator.Id, result.Data.Items[0].InviterId)
+		assert.Equal(t, "m***", result.Data.Items[0].InviteeName)
+		assert.Equal(t, model.AffiliateRewardSourceRedemption, result.Data.Items[0].SourceType)
+		if query == "?source_type=redemption" {
+			assert.Equal(t, 1, result.Data.Total)
+		} else {
+			assert.Equal(t, 2, result.Data.Total)
+		}
+	}
+	for _, query := range []string{"?source_type=subscription", "?p=-1", "?page_size=-1", "?p=9223372036854775807&page_size=100"} {
+		response := securityEnrollmentRequest(http.MethodGet, "/api/user/aff/rewards"+query, "", "", identity, GetAffiliateRewards)
+		assert.Equal(t, http.StatusBadRequest, response.Code, query)
+	}
 }
 
 func TestCreateUserRejectsNonStandardRole(t *testing.T) {
