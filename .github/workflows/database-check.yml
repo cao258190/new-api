@@ -1,0 +1,77 @@
+name: Database compatibility
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: database-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  migrations:
+    name: SQLite, MySQL 5.7, and PostgreSQL 9.6 migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      mysql:
+        image: mysql:5.7.44
+        env:
+          MYSQL_ROOT_PASSWORD: database-test-only
+          MYSQL_DATABASE: newapi_test
+          MYSQL_ROOT_HOST: '%'
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pdatabase-test-only --silent"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+      postgres:
+        image: postgres:9.6.24
+        env:
+          POSTGRES_USER: newapi_test
+          POSTGRES_PASSWORD: database-test-only
+          POSTGRES_DB: newapi_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U newapi_test -d newapi_test"
+          --health-interval=5s --health-timeout=5s --health-retries=30
+    env:
+      GOWORK: 'off'
+      TEST_MYSQL_DSN: root:database-test-only@tcp(127.0.0.1:3306)/newapi_test?charset=utf8mb4&parseTime=true
+      TEST_POSTGRES_DSN: postgres://newapi_test:database-test-only@127.0.0.1:5432/newapi_test?sslmode=disable
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            relaykit/go.sum
+            tokenkit/go.sum
+
+      - name: Prepare latest released baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release=$(gh api repos/QuantumNous/new-api/releases/latest --jq .tag_name)
+          [[ "$release" =~ ^v[0-9][0-9A-Za-z._-]*$ ]]
+          git -c http.version=HTTP/1.1 fetch --no-tags https://github.com/QuantumNous/new-api.git "refs/tags/$release"
+          release_sha=$(git rev-parse FETCH_HEAD)
+          echo "Released baseline: $release ($release_sha)"
+          mkdir -p "$RUNNER_TEMP/database-release"
+          git archive "$release_sha" | tar -x -C "$RUNNER_TEMP/database-release"
+
+      - name: Check real databases, released upgrades, and restart idempotency
+        env:
+          TEST_DATABASE_RUN_ID: ci${{ github.run_id }}x${{ github.run_attempt }}
+        run: sh .github/scripts/check-databases.sh "$RUNNER_TEMP/database-release"
