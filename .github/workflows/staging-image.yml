@@ -12,14 +12,13 @@ concurrency:
   cancel-in-progress: false
 
 # Build only for the existing isolated test environment. The repository owner
-# requested no repeated tests for this deployment; this source already passed
-# the local backend, frontend and three-database checks in the current task.
+# requested no tests for this follow-up; local typecheck and targeted lint passed.
 # Production publishing remains a separate, protected registry workflow.
 env:
-  SOURCE_SHA: 05de6d4b468d4094972531f6cb4925f132f043bd
+  SOURCE_SHA: 330c81af34835ef463285cd75cd0086f193cf7e0
   UPSTREAM_SHA: ea343c4a81151bfd537d33b66527c25fa21a1112
-  RELEASE_VERSION: custom-v2026.11.06.1-rc.1
-  IMAGE_REF: new-api-staging:custom-v2026.11.06.1-rc.1
+  RELEASE_VERSION: custom-v2026.11.07.1-rc.1
+  IMAGE_REF: new-api-staging:custom-v2026.11.07.1-rc.1
 
 jobs:
   build:
@@ -73,7 +72,7 @@ jobs:
           jq -n --arg version "$RELEASE_VERSION" --arg image "$IMAGE_REF" --arg id "$image_id" \
             --arg source "$(git rev-parse HEAD)" --arg upstream "$UPSTREAM_SHA" \
             --arg workflow_sha "$GITHUB_SHA" --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            '{version:$version,image_ref:$image,image_id:$id,source_sha:$source,upstream_sha:$upstream,workflow_sha:$workflow_sha,platform:"linux/amd64",run_url:$run_url,purpose:"isolated staging only",tests:{rerun:false,reason:"explicit user request; prior task validation retained"},security_scanning:{enabled:false,policy:"existing isolated staging policy"}}' \
+            '{version:$version,image_ref:$image,image_id:$id,source_sha:$source,upstream_sha:$upstream,workflow_sha:$workflow_sha,platform:"linux/amd64",run_url:$run_url,purpose:"isolated staging only",tests:{rerun:false,reason:"explicit user request"},security_scanning:{enabled:false,policy:"existing isolated staging policy"}}' \
             > "$RUNNER_TEMP/release/release.json"
           docker save "$IMAGE_REF" | gzip -1 > "$RUNNER_TEMP/release/image.tar.gz"
           cd "$RUNNER_TEMP/release"
