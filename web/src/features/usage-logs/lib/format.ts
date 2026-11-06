@@ -293,21 +293,46 @@ export function decodeBillingExprB64(exprB64: string | undefined): string {
 
 /**
  * Resolve which parsed tier corresponds to the matched_tier label in a log
- * entry. Missing or unknown labels do not fall back to another tier because
- * that would display guessed unit prices.
+ * entry. When multiple tiers share a label, recorded billing tokens select
+ * the matching condition; missing or unknown facts do not guess unit prices.
  */
 export function resolveMatchedTier(
   tiers: ParsedTier[],
-  matchedLabel: string | undefined
+  matchedLabel: string | undefined,
+  billingTokens?: Record<string, number>
 ): ParsedTier | null {
   if (tiers.length === 0) return null
-  if (!matchedLabel) return null
-  const found = tiers.find((tier) => {
-    const l1 = normalizeTierLabel(tier.label)
-    const l2 = normalizeTierLabel(matchedLabel)
-    return l1 === l2 && l1 !== ''
+  const candidates = matchedLabel
+    ? tiers.filter((tier) => {
+        const l1 = normalizeTierLabel(tier.label)
+        const l2 = normalizeTierLabel(matchedLabel)
+        return l1 === l2 && l1 !== ''
+      })
+    : tiers
+  if (matchedLabel && candidates.length === 0) return null
+  if (candidates.length === 1) return candidates[0]
+  if (!billingTokens) return matchedLabel ? candidates[0] || null : null
+
+  const matches = candidates.filter((tier) => {
+    if (tier.conditions.length === 0) return false
+    return tier.conditions.every((condition) => {
+      const value = billingTokens[condition.var]
+      if (!Number.isFinite(value)) return false
+      switch (condition.op) {
+        case '<':
+          return value < condition.value
+        case '<=':
+          return value <= condition.value
+        case '>':
+          return value > condition.value
+        case '>=':
+          return value >= condition.value
+        default:
+          return false
+      }
+    })
   })
-  return found || null
+  return matches.length === 1 ? matches[0] : null
 }
 
 /**
@@ -354,7 +379,11 @@ export function getTieredBillingSummary(
   const tiers = parseTiersFromExpr(
     splitBillingExprAndRequestRules(exprStr).billingExpr
   )
-  const tier = resolveMatchedTier(tiers, other.matched_tier)
+  const tier = resolveMatchedTier(
+    tiers,
+    other.matched_tier,
+    other.billing_tokens
+  )
   if (
     other.billing_unit === 'request' &&
     typeof other.fixed_price === 'number' &&
