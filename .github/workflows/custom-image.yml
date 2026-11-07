@@ -341,14 +341,36 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for attempt in $(seq 1 30); do
+          required_assets=(
+            checksums-linux.txt
+            checksums-macos.txt
+            checksums-windows.txt
+            "new-api-${RELEASE_TAG}"
+            "new-api-arm64-${RELEASE_TAG}"
+            "new-api-macos-${RELEASE_TAG}"
+            "new-api-${RELEASE_TAG}.exe"
+          )
+          for attempt in $(seq 1 90); do
             if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              gh release upload "$RELEASE_TAG" release-metadata.txt \
-                --repo "$GITHUB_REPOSITORY" \
-                --clobber
-              exit 0
+              assets="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name]')"
+              all_assets_present=true
+              for asset in "${required_assets[@]}"; do
+                if ! jq -e --arg asset "$asset" 'index($asset) != null' <<<"$assets" >/dev/null; then
+                  all_assets_present=false
+                  break
+                fi
+              done
+              if [[ "$all_assets_present" == true ]]; then
+                gh release upload "$RELEASE_TAG" release-metadata.txt \
+                  --repo "$GITHUB_REPOSITORY" \
+                  --clobber
+                release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.id')"
+                gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" --field draft=false >/dev/null
+                echo "Published verified GitHub Release $RELEASE_TAG"
+                exit 0
+              fi
             fi
             sleep 10
           done
-          echo "::error::GitHub Release $RELEASE_TAG was not created in time"
+          echo "::error::GitHub Release $RELEASE_TAG and all platform assets were not ready in time"
           exit 1
