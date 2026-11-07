@@ -71,6 +71,11 @@ export function SidebarModulesCard() {
           description: t('AI model testing environment'),
         },
         {
+          key: 'imageStudio',
+          title: t('Image Studio'),
+          description: t('Generate and edit images with OpenAI image models.'),
+        },
+        {
           key: 'chat',
           title: t('Chat'),
           description: t('Chat session management'),

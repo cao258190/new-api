@@ -14,7 +14,10 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/model_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -187,6 +190,115 @@ func TestGetModelRequestAssignsDeepSeekToolRoutingNames(t *testing.T) {
 		assert.True(t, shouldSelectChannel, tc.body)
 		assert.Equal(t, tc.want, modelRequest.Model, tc.body)
 	}
+}
+
+func TestPlaygroundImageRequestMapsRelayPathAndSelectedGroup(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	selectedGroup := ""
+	for group := range service.GetUserUsableGroups("default") {
+		if group != "default" {
+			selectedGroup = group
+			break
+		}
+	}
+	if selectedGroup == "" {
+		selectedGroup = "default"
+	}
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
+		common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+		c.Next()
+	})
+	router.POST("/pg/images/generations", PlaygroundImageRequest(), func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"path":  c.Request.URL.Path,
+			"group": common.GetContextKeyString(c, constant.ContextKeyUsingGroup),
+			"query": c.Request.URL.RawQuery,
+		})
+	})
+	request := httptest.NewRequest(http.MethodPost, "/pg/images/generations?group="+selectedGroup, strings.NewReader(`{"model":"gpt-image-1"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.JSONEq(t, `{"path":"/v1/images/generations","group":"`+selectedGroup+`","query":""}`, recorder.Body.String())
+}
+
+func TestPlaygroundImageRequestRejectsUnavailableGroup(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	group := "__image_studio_forbidden__"
+	for service.GroupInUserUsableGroups("", group) {
+		group += "_"
+	}
+	require.NoError(t, i18n.Init())
+	router := gin.New()
+	router.POST("/pg/images/generations", PlaygroundImageRequest(), func(c *gin.Context) {
+		t.Fatal("an unavailable group must be rejected before the relay handler")
+	})
+	request := httptest.NewRequest(http.MethodPost, "/pg/images/generations?group="+group, strings.NewReader(`{"model":"gpt-image-1"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusForbidden, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), "group")
+}
+
+func TestPlaygroundImageRequestDefaultsToAuthenticatedUserGroup(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyUserGroup, "vip")
+		c.Next()
+	})
+	router.POST("/pg/images/generations", PlaygroundImageRequest(), func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"group": common.GetContextKeyString(c, constant.ContextKeyUsingGroup),
+			"query": c.Request.URL.RawQuery,
+		})
+	})
+	request := httptest.NewRequest(http.MethodPost, "/pg/images/generations", strings.NewReader(`{"model":"gpt-image-1"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.JSONEq(t, `{"group":"vip","query":""}`, recorder.Body.String())
+}
+
+func TestPlaygroundImageRequestAppliesAuthenticatedGroupRestrictions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	require.NoError(t, i18n.Init())
+	originalUsableGroups := setting.UserUsableGroups2JSONString()
+	originalSpecialGroups := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup.ReadAll()
+	t.Cleanup(func() {
+		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(originalUsableGroups))
+		specialGroups := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup
+		specialGroups.Clear()
+		specialGroups.AddAll(originalSpecialGroups)
+	})
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default group","blocked-for-special-user":"Blocked group"}`))
+	specialGroups := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup
+	specialGroups.Clear()
+	specialGroups.Set("special-user", map[string]string{"-:blocked-for-special-user": ""})
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyUserGroup, "special-user")
+		c.Next()
+	})
+	router.POST("/pg/images/generations", PlaygroundImageRequest(), func(c *gin.Context) {
+		c.Status(http.StatusOK)
+	})
+	request := httptest.NewRequest(http.MethodPost, "/pg/images/generations?group=blocked-for-special-user", strings.NewReader(`{"model":"gpt-image-1"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusForbidden, recorder.Code)
 }
 
 func TestTokenModelLimitAllowsExemptAtNameByFullName(t *testing.T) {

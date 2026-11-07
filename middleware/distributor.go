@@ -31,6 +31,44 @@ type ModelRequest struct {
 	Group string `json:"group,omitempty"`
 }
 
+// PlaygroundImageRequest maps the authenticated dashboard image routes to the
+// shared OpenAI image relay paths and consumes the selected group locally.
+func PlaygroundImageRequest() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		switch c.Request.URL.Path {
+		case "/pg/images/generations":
+			c.Request.URL.Path = "/v1/images/generations"
+		case "/pg/images/edits":
+			c.Request.URL.Path = "/v1/images/edits"
+		}
+		if c.Request.URL.Path == "/v1/images/generations" || c.Request.URL.Path == "/v1/images/edits" {
+			c.Request.URL.RawPath = ""
+		}
+		query := c.Request.URL.Query()
+		groups := query["group"]
+		if len(groups) > 1 {
+			abortWithOpenAiMessage(c, http.StatusBadRequest, "group must be provided once")
+			return
+		}
+		query.Del("group")
+		c.Request.URL.RawQuery = query.Encode()
+		userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+		common.SetContextKey(c, constant.ContextKeyUsingGroup, userGroup)
+		if len(groups) == 0 || strings.TrimSpace(groups[0]) == "" {
+			c.Next()
+			return
+		}
+
+		group := strings.TrimSpace(groups[0])
+		if !service.GroupInUserUsableGroups(userGroup, group) && group != userGroup {
+			abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorGroupAccessDenied))
+			return
+		}
+		common.SetContextKey(c, constant.ContextKeyUsingGroup, group)
+		c.Next()
+	}
+}
+
 func Distribute() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		var channel *model.Channel
