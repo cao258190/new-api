@@ -18,6 +18,11 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { z } from 'zod'
 
+/** Supported entitlements that a redemption code can grant. */
+export const redemptionTypeSchema = z.enum(['quota', 'subscription'])
+/** Type of entitlement granted when a code is redeemed. */
+export type RedemptionType = z.infer<typeof redemptionTypeSchema>
+
 // ============================================================================
 // Redemption Schema & Types
 // ============================================================================
@@ -27,6 +32,9 @@ export const redemptionSchema = z.object({
   user_id: z.number(),
   name: z.string(),
   key: z.string(),
+  type: redemptionTypeSchema.optional(),
+  plan_id: z.number().optional(),
+  plan_title: z.string().optional(),
   status: z.number(), // 1: enabled, 2: disabled, 3: used
   quota: z.number(),
   created_time: z.number(),
@@ -73,7 +81,9 @@ export interface SearchRedemptionsParams {
 export interface RedemptionFormData {
   id?: number
   name: string
-  quota: number
+  type: RedemptionType
+  plan_id?: number
+  quota?: number
   expired_time: number
   count?: number // Only for create
   status?: number // Only for status update

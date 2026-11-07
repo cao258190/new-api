@@ -208,3 +208,126 @@ func TestRedeemConcurrentSingleSuccess(t *testing.T) {
 	require.NoError(t, DB.First(&user, "id = ?", userId).Error)
 	assert.Equal(t, 300, user.Quota, "quota must be credited exactly once")
 }
+
+func setupSubscriptionRedemption(t *testing.T, key string) (*User, *SubscriptionPlan, *Redemption) {
+	t.Helper()
+	require.NoError(t, DB.AutoMigrate(&Redemption{}))
+	user := &User{Username: "subscription-user-" + key[len(key)-4:], Password: "password", Status: common.UserStatusEnabled, Group: "default"}
+	require.NoError(t, DB.Create(user).Error)
+	plan := &SubscriptionPlan{Title: "Original plan", DurationUnit: SubscriptionDurationDay, DurationValue: 30, Enabled: true, TotalAmount: 1000}
+	require.NoError(t, DB.Create(plan).Error)
+	redemption := &Redemption{Name: "subscription-code", Key: key, Type: RedemptionTypeSubscription, PlanId: plan.Id, Status: common.RedemptionCodeStatusEnabled}
+	require.NoError(t, redemption.Insert())
+	t.Cleanup(func() {
+		require.NoError(t, DB.Where("user_id = ?", user.Id).Unscoped().Delete(&UserSubscription{}).Error)
+		require.NoError(t, DB.Unscoped().Delete(redemption).Error)
+		require.NoError(t, DB.Unscoped().Delete(plan).Error)
+		require.NoError(t, DB.Unscoped().Delete(user).Error)
+	})
+	return user, plan, redemption
+}
+
+func TestRedeemSubscriptionCodeCreatesSubscription(t *testing.T) {
+	user, plan, redemption := setupSubscriptionRedemption(t, "20000000000000000000000000000001")
+	assert.Zero(t, redemption.Quota, "subscription codes must not carry the legacy quota default")
+	require.NoError(t, DB.Model(plan).Updates(map[string]any{"title": "Updated plan", "total_amount": 2500, "upgrade_group": "vip"}).Error)
+	var stored Redemption
+	require.NoError(t, DB.First(&stored, redemption.Id).Error)
+	assert.Zero(t, stored.Quota, "subscription codes must not inherit the legacy quota default")
+
+	result, err := RedeemCode(redemption.Key, user.Id)
+	require.NoError(t, err)
+	assert.Equal(t, RedemptionTypeSubscription, result.Type)
+	assert.Equal(t, plan.Id, result.PlanId)
+	assert.Equal(t, "Updated plan", result.PlanTitle)
+
+	var subscription UserSubscription
+	require.NoError(t, DB.Where("user_id = ?", user.Id).First(&subscription).Error)
+	assert.Equal(t, plan.Id, subscription.PlanId)
+	assert.Equal(t, "redemption", subscription.Source)
+	assert.Equal(t, int64(2500), subscription.AmountTotal)
+	assert.Equal(t, "vip", subscription.UpgradeGroup)
+	assert.Equal(t, int64(30*24*60*60), subscription.EndTime-subscription.StartTime)
+	require.NoError(t, DB.First(&stored, redemption.Id).Error)
+	assert.Equal(t, common.RedemptionCodeStatusUsed, stored.Status)
+	assert.Equal(t, user.Id, stored.UsedUserId)
+	var updatedUser User
+	require.NoError(t, DB.First(&updatedUser, user.Id).Error)
+	assert.Equal(t, "vip", updatedUser.Group)
+	assert.Zero(t, updatedUser.Quota, "subscription codes must not credit wallet quota")
+}
+
+func TestRedeemSubscriptionCodeRejectsUnavailableEntitlements(t *testing.T) {
+	tests := []struct {
+		name          string
+		key           string
+		status        int
+		expired       bool
+		disablePlan   bool
+		purchaseLimit bool
+	}{
+		{name: "disabled code", key: "20000000000000000000000000000002", status: common.RedemptionCodeStatusDisabled},
+		{name: "expired code", key: "20000000000000000000000000000003", expired: true},
+		{name: "disabled plan", key: "20000000000000000000000000000004", disablePlan: true},
+		{name: "purchase limit rolls back code use", key: "20000000000000000000000000000005", purchaseLimit: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			user, plan, redemption := setupSubscriptionRedemption(t, tc.key)
+			if tc.status != 0 {
+				require.NoError(t, DB.Model(redemption).Update("status", tc.status).Error)
+			}
+			if tc.expired {
+				require.NoError(t, DB.Model(redemption).Update("expired_time", common.GetTimestamp()-1).Error)
+			}
+			if tc.disablePlan {
+				require.NoError(t, DB.Model(plan).Update("enabled", false).Error)
+			}
+			if tc.purchaseLimit {
+				require.NoError(t, DB.Model(plan).Update("max_purchase_per_user", 1).Error)
+				require.NoError(t, DB.Create(&UserSubscription{UserId: user.Id, PlanId: plan.Id, Status: "active"}).Error)
+			}
+
+			_, err := RedeemCode(redemption.Key, user.Id)
+			require.ErrorIs(t, err, ErrRedeemFailed)
+			var stored Redemption
+			require.NoError(t, DB.First(&stored, redemption.Id).Error)
+			expectedStatus := common.RedemptionCodeStatusEnabled
+			if tc.status != 0 {
+				expectedStatus = tc.status
+			}
+			assert.Equal(t, expectedStatus, stored.Status)
+			assert.Zero(t, stored.UsedUserId)
+			var count int64
+			require.NoError(t, DB.Model(&UserSubscription{}).Where("user_id = ?", user.Id).Count(&count).Error)
+			if tc.purchaseLimit {
+				assert.Equal(t, int64(1), count)
+			} else {
+				assert.Zero(t, count)
+			}
+		})
+	}
+}
+
+func TestRedeemSubscriptionCodeConcurrentSingleSuccess(t *testing.T) {
+	user, _, redemption := setupSubscriptionRedemption(t, "20000000000000000000000000000006")
+	var wg sync.WaitGroup
+	successes := make([]bool, 2)
+	for i := range successes {
+		wg.Go(func() {
+			_, err := RedeemCode(redemption.Key, user.Id)
+			successes[i] = err == nil
+		})
+	}
+	wg.Wait()
+	successCount := 0
+	for _, success := range successes {
+		if success {
+			successCount++
+		}
+	}
+	assert.Equal(t, 1, successCount)
+	var count int64
+	require.NoError(t, DB.Model(&UserSubscription{}).Where("user_id = ?", user.Id).Count(&count).Error)
+	assert.Equal(t, int64(1), count)
+}

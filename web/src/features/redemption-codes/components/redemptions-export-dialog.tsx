@@ -25,11 +25,10 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 
-export type RedemptionExportData = {
-  keys: string[]
-  name: string
-  quota: string
-}
+/** Codes and the entitlement printed alongside them in the export. */
+export type RedemptionExportData =
+  | { keys: string[]; name: string; quota: string; planTitle?: never }
+  | { keys: string[]; name: string; planTitle: string; quota?: never }
 
 type RedemptionsExportDialogProps = {
   data: RedemptionExportData
@@ -42,7 +41,10 @@ export function RedemptionsExportDialog(props: RedemptionsExportDialogProps) {
   const [saveToFile, setSaveToFile] = useState(false)
   const [format, setFormat] = useState<'txt' | 'md'>('txt')
   const [includeName, setIncludeName] = useState(true)
-  const [includeQuota, setIncludeQuota] = useState(true)
+  const [includeDetail, setIncludeDetail] = useState(true)
+  const isSubscription = props.data.planTitle !== undefined
+  const detailLabel = isSubscription ? t('Plan') : t('Quota')
+  const detailValue = props.data.planTitle ?? props.data.quota ?? ''
 
   const handleComplete = () => {
     if (!saveToFile) {
@@ -52,13 +54,13 @@ export function RedemptionsExportDialog(props: RedemptionsExportDialogProps) {
     const headers: string[] = []
     if (includeName) headers.push(t('Name'))
     headers.push(t('Code'))
-    if (includeQuota) headers.push(t('Quota'))
+    if (includeDetail) headers.push(detailLabel)
 
     const rows = props.data.keys.map((key) => {
       const row: string[] = []
       if (includeName) row.push(props.data.name)
       row.push(key)
-      if (includeQuota) row.push(props.data.quota)
+      if (includeDetail) row.push(detailValue)
       return row.map((value) => value.replaceAll(/[\t\r\n]+/g, ' '))
     })
 
@@ -154,11 +156,13 @@ export function RedemptionsExportDialog(props: RedemptionsExportDialogProps) {
             </div>
             <div className='flex items-center gap-2'>
               <Checkbox
-                id={`${id}-quota`}
-                checked={includeQuota}
-                onCheckedChange={setIncludeQuota}
+                id={`${id}-detail`}
+                checked={includeDetail}
+                onCheckedChange={setIncludeDetail}
               />
-              <Label htmlFor={`${id}-quota`}>{t('Include quota')}</Label>
+              <Label htmlFor={`${id}-detail`}>
+                {isSubscription ? t('Include plan') : t('Include quota')}
+              </Label>
             </div>
           </div>
         </div>

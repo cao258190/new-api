@@ -25,6 +25,11 @@ import (
 
 func GetTopUpInfo(c *gin.Context) {
 	complianceConfirmed := operation_setting.IsPaymentComplianceConfirmed()
+	var user model.User
+	if err := model.DB.Select("aff_reward_rate").Where("id = ?", c.GetInt("id")).First(&user).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
 
 	// 获取支付方式
 	payMethods := operation_setting.PayMethods
@@ -106,6 +111,7 @@ func GetTopUpInfo(c *gin.Context) {
 		"enable_redemption":                complianceConfirmed,
 		"payment_compliance_confirmed":     complianceConfirmed,
 		"payment_compliance_terms_version": operation_setting.CurrentComplianceTermsVersion,
+		"affiliate_reward_rate":            operation_setting.EffectiveAffiliateRewardRate(user.AffRewardRate),
 		"waffo_pay_methods": func() any {
 			if enableWaffo {
 				return setting.GetWaffoPayMethods()

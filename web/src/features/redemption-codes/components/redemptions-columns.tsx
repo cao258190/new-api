@@ -155,9 +155,32 @@ export function useRedemptionsColumns(): ColumnDef<Redemption>[] {
       size: 320,
     },
     {
+      id: 'type',
+      header: t('Type'),
+      cell: ({ row }) => {
+        const redemption = row.original
+        if ((redemption.type || 'quota') === 'subscription') {
+          return (
+            <div className='min-w-[150px] text-sm'>
+              <div className='font-medium'>{t('Subscription Code')}</div>
+              <div className='text-muted-foreground text-xs'>
+                {redemption.plan_title ||
+                  t('Plan #{{id}}', { id: redemption.plan_id || 0 })}
+              </div>
+            </div>
+          )
+        }
+        return <span className='text-sm'>{t('Quota Code')}</span>
+      },
+      size: 170,
+    },
+    {
       accessorKey: 'quota',
       header: t('Quota'),
       cell: ({ row }) => {
+        if ((row.original.type || 'quota') === 'subscription') {
+          return <span className='text-muted-foreground'>-</span>
+        }
         const quota = row.getValue('quota') as number
         return (
           <StatusBadge

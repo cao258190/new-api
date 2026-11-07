@@ -119,6 +119,7 @@ export function UsersMutateDrawer({
   // Matrix as loaded from the server; an unchanged matrix is not resubmitted so
   // routine edits of an administrator do not require step-up verification.
   const loadedPermissions = useRef<AdminPermissionMatrix | undefined>(undefined)
+  const loadedAffiliateRate = useRef<number | null>(null)
 
   // Fetch groups
   const { data: groupsData } = useQuery({
@@ -149,6 +150,7 @@ export function UsersMutateDrawer({
         .then((result) => {
           if (result.success && result.data) {
             loadedPermissions.current = result.data.admin_permissions
+            loadedAffiliateRate.current = result.data.aff_reward_rate ?? null
             form.reset(transformUserToFormDefaults(result.data))
           } else {
             handleServerError(result, t('Failed to load'))
@@ -188,6 +190,15 @@ export function UsersMutateDrawer({
         currentRow?.id,
         permissionCatalog
       )
+      if (isUpdate) {
+        const rate =
+          data.aff_reward_rate === ''
+            ? null
+            : Math.round(Number(data.aff_reward_rate) * 100)
+        if (rate !== loadedAffiliateRate.current) {
+          payload.aff_reward_rate = rate
+        }
+      }
       if (
         isUpdate &&
         payload.admin_permissions &&
@@ -205,7 +216,11 @@ export function UsersMutateDrawer({
       // administrator changes who can sign in or what they may do.
       let proofToken: string | undefined
       if (isUpdate && currentRow) {
-        if (payload.password || payload.admin_permissions) {
+        if (
+          payload.password ||
+          payload.admin_permissions ||
+          payload.aff_reward_rate !== undefined
+        ) {
           const proof = await requestVerification({
             scope: 'admin.user.update',
             context: { user_id: currentRow.id },
@@ -264,6 +279,7 @@ export function UsersMutateDrawer({
       const result = requireServerSuccess(await getUser(currentRow.id))
       if (result.success && result.data) {
         loadedPermissions.current = result.data.admin_permissions
+        loadedAffiliateRate.current = result.data.aff_reward_rate ?? null
         form.reset(transformUserToFormDefaults(result.data))
       }
       triggerRefresh()
@@ -492,6 +508,34 @@ export function UsersMutateDrawer({
                             rows={3}
                           />
                         </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='aff_reward_rate'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>
+                          {t('Personal referral rebate rate (%)')}
+                        </FormLabel>
+                        <FormControl>
+                          <Input
+                            {...field}
+                            type='number'
+                            min={0}
+                            max={100}
+                            step={0.01}
+                            placeholder={t('Use global default')}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'Leave empty to use the global rate. Set 0 to disable rebates for this inviter.'
+                          )}
+                        </FormDescription>
                         <FormMessage />
                       </FormItem>
                     )}

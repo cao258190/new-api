@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
@@ -10,10 +11,18 @@ import (
 	"gorm.io/gorm"
 )
 
+const (
+	RedemptionTypeQuota        = "quota"
+	RedemptionTypeSubscription = "subscription"
+)
+
 type Redemption struct {
 	Id           int            `json:"id"`
 	UserId       int            `json:"user_id"`
 	Key          string         `json:"key" gorm:"type:char(32);uniqueIndex"`
+	Type         string         `json:"type" gorm:"type:varchar(16);default:'quota';index"`
+	PlanId       int            `json:"plan_id" gorm:"index"`
+	PlanTitle    string         `json:"plan_title,omitempty" gorm:"-"`
 	Status       int            `json:"status" gorm:"default:1"`
 	Name         string         `json:"name" gorm:"index"`
 	Quota        int            `json:"quota" gorm:"default:100"`
@@ -23,6 +32,20 @@ type Redemption struct {
 	UsedUserId   int            `json:"used_user_id"`
 	DeletedAt    gorm.DeletedAt `gorm:"index"`
 	ExpiredTime  int64          `json:"expired_time" gorm:"bigint"` // 过期时间，0 表示不过期
+}
+
+type RedemptionResult struct {
+	Type      string
+	Quota     int
+	PlanId    int
+	PlanTitle string
+}
+
+func (redemption *Redemption) NormalizeType() {
+	redemption.Type = strings.ToLower(strings.TrimSpace(redemption.Type))
+	if redemption.Type == "" {
+		redemption.Type = RedemptionTypeQuota
+	}
 }
 
 func GetAllRedemptions(startIdx int, num int) (redemptions []*Redemption, total int64, err error) {
@@ -55,8 +78,40 @@ func GetAllRedemptions(startIdx int, num int) (redemptions []*Redemption, total 
 	if err = tx.Commit().Error; err != nil {
 		return nil, 0, err
 	}
+	if err := populateRedemptionPlanTitles(redemptions); err != nil {
+		return nil, 0, err
+	}
 
 	return redemptions, total, nil
+}
+
+func populateRedemptionPlanTitles(redemptions []*Redemption) error {
+	planIDs := make(map[int]struct{})
+	for _, redemption := range redemptions {
+		if redemption.PlanId > 0 {
+			planIDs[redemption.PlanId] = struct{}{}
+		}
+	}
+	if len(planIDs) == 0 {
+		return nil
+	}
+
+	ids := make([]int, 0, len(planIDs))
+	for id := range planIDs {
+		ids = append(ids, id)
+	}
+	var plans []SubscriptionPlan
+	if err := DB.Where("id IN ?", ids).Select("id", "title").Find(&plans).Error; err != nil {
+		return err
+	}
+	titles := make(map[int]string, len(plans))
+	for _, plan := range plans {
+		titles[plan.Id] = plan.Title
+	}
+	for _, redemption := range redemptions {
+		redemption.PlanTitle = titles[redemption.PlanId]
+	}
+	return nil
 }
 
 func SearchRedemptions(keyword string, status string, startIdx int, num int) (redemptions []*Redemption, total int64, err error) {
@@ -119,6 +174,9 @@ func SearchRedemptions(keyword string, status string, startIdx int, num int) (re
 	if err = tx.Commit().Error; err != nil {
 		return nil, 0, err
 	}
+	if err := populateRedemptionPlanTitles(redemptions); err != nil {
+		return nil, 0, err
+	}
 
 	return redemptions, total, nil
 }
@@ -130,17 +188,34 @@ func GetRedemptionById(id int) (*Redemption, error) {
 	redemption := Redemption{Id: id}
 	var err error = nil
 	err = DB.First(&redemption, "id = ?", id).Error
+	if err == nil {
+		err = populateRedemptionPlanTitles([]*Redemption{&redemption})
+	}
 	return &redemption, err
 }
 
 func Redeem(key string, userId int) (quota int, err error) {
+	result, err := redeemCode(key, userId, RedemptionTypeQuota)
+	if err != nil {
+		return 0, err
+	}
+	return result.Quota, nil
+}
+
+// RedeemCode grants the quota or subscription bound to a code exactly once.
+func RedeemCode(key string, userId int) (result RedemptionResult, err error) {
+	return redeemCode(key, userId, "")
+}
+
+func redeemCode(key string, userId int, requiredType string) (result RedemptionResult, err error) {
 	if key == "" {
-		return 0, errors.New("redemption code not provided")
+		return result, errors.New("redemption code not provided")
 	}
 	if userId == 0 {
-		return 0, errors.New("invalid user id")
+		return result, errors.New("invalid user id")
 	}
 	redemption := &Redemption{}
+	var reward AffiliateReward
 
 	keyCol := "`key`"
 	if common.UsingMainDatabase(common.DatabaseTypePostgreSQL) {
@@ -152,49 +227,117 @@ func Redeem(key string, userId int) (quota int, err error) {
 		if err != nil {
 			return errors.New("invalid redemption code")
 		}
+		redemption.NormalizeType()
+		if redemption.Type != RedemptionTypeQuota && redemption.Type != RedemptionTypeSubscription {
+			return errors.New("invalid redemption type")
+		}
+		if requiredType != "" && redemption.Type != requiredType {
+			return errors.New("redemption code type mismatch")
+		}
 		if redemption.Status != common.RedemptionCodeStatusEnabled {
 			return errors.New("redemption code already used")
 		}
 		if redemption.ExpiredTime != 0 && redemption.ExpiredTime < common.GetTimestamp() {
 			return errors.New("redemption code expired")
 		}
+		var plan *SubscriptionPlan
+		if redemption.Type == RedemptionTypeSubscription {
+			if redemption.PlanId <= 0 {
+				return errors.New("subscription redemption code has no plan")
+			}
+			var subscriptionPlan SubscriptionPlan
+			if err := lockForUpdate(tx).Where("id = ?", redemption.PlanId).First(&subscriptionPlan).Error; err != nil {
+				return err
+			}
+			subscriptionPlan.NormalizeDefaults()
+			if !subscriptionPlan.Enabled {
+				return errors.New("subscription plan is not enabled")
+			}
+			plan = &subscriptionPlan
+			var user User
+			if err := lockForUpdate(tx).Select("id").Where("id = ?", userId).First(&user).Error; err != nil {
+				return err
+			}
+		}
 		// Compare-and-swap on status: only the transaction that flips
-		// enabled -> used may credit quota, so a concurrent redeem of the
-		// same code loses here even without a row lock (e.g. on SQLite).
-		result := tx.Model(&Redemption{}).
+		// enabled -> used may grant the entitlement, including on SQLite.
+		updateResult := tx.Model(&Redemption{}).
 			Where("id = ? AND status = ?", redemption.Id, common.RedemptionCodeStatusEnabled).
 			Updates(map[string]any{
 				"redeemed_time": common.GetTimestamp(),
 				"status":        common.RedemptionCodeStatusUsed,
 				"used_user_id":  userId,
 			})
-		if result.Error != nil {
-			return result.Error
+		if updateResult.Error != nil {
+			return updateResult.Error
 		}
-		if result.RowsAffected == 0 {
+		if updateResult.RowsAffected == 0 {
 			return errors.New("redemption code already used")
 		}
-		return creditTopUpQuota(tx, userId, redemption.Quota, nil)
+		if redemption.Type == RedemptionTypeSubscription {
+			if _, err := CreateUserSubscriptionFromPlanTx(tx, userId, plan, "redemption"); err != nil {
+				return err
+			}
+			result = RedemptionResult{
+				Type:      RedemptionTypeSubscription,
+				PlanId:    plan.Id,
+				PlanTitle: plan.Title,
+			}
+			return nil
+		}
+		if err := creditTopUpQuota(tx, userId, redemption.Quota, nil); err != nil {
+			return err
+		}
+		reward, err = grantAffiliateRewardTx(tx, userId, AffiliateRewardSourceRedemption, redemption.Id, redemption.Quota)
+		if err != nil {
+			return err
+		}
+		result = RedemptionResult{Type: RedemptionTypeQuota, Quota: redemption.Quota}
+		return nil
 	})
 	if err != nil {
 		common.SysError(common.LogText("redemption failed: %s", err.Error()))
-		return 0, ErrRedeemFailed
+		return RedemptionResult{}, ErrRedeemFailed
 	}
-	syncCreditUserQuotaCache(userId, redemption.Quota, common.LogText("redemption"))
-	RecordLog(userId, LogTypeTopup, common.NewMessage("Topped up {{quota}} with a redemption code, code ID {{id}}", map[string]any{"quota": logger.FormatQuota(redemption.Quota), "id": redemption.Id}))
-	return redemption.Quota, nil
+	if result.Type == RedemptionTypeQuota {
+		syncCreditUserQuotaCache(userId, result.Quota, common.LogText("redemption"))
+		syncAffiliateRewardQuotaCache(reward)
+		RecordLog(userId, LogTypeTopup, common.NewMessage("Topped up {{quota}} with a redemption code, code ID {{id}}", map[string]any{"quota": logger.FormatQuota(result.Quota), "id": redemption.Id}))
+	} else {
+		refreshSubscriptionUserGroupCache(userId, common.LogText("subscription redemption"))
+		RecordLog(userId, LogTypeTopup, common.NewMessage("Subscription redeemed, plan: {{plan}}", map[string]any{"plan": result.PlanTitle}))
+	}
+	return result, nil
 }
 
 func (redemption *Redemption) Insert() error {
-	if redemption.Quota <= 0 {
-		return errors.New("redemption quota must be positive")
+	redemption.NormalizeType()
+	if redemption.Type == RedemptionTypeSubscription {
+		if redemption.PlanId <= 0 {
+			return errors.New("subscription redemption code requires a plan")
+		}
+	} else {
+		if redemption.Type != RedemptionTypeQuota {
+			return errors.New("invalid redemption type")
+		}
+		if redemption.Quota <= 0 {
+			return errors.New("redemption quota must be positive")
+		}
+		if err := common.ValidateWalletQuota(redemption.Quota); err != nil {
+			return err
+		}
 	}
-	if err := common.ValidateWalletQuota(redemption.Quota); err != nil {
-		return err
+	if redemption.Type == RedemptionTypeSubscription {
+		redemption.Quota = 0
+		// GORM applies the legacy default of 100 to zero-valued struct fields.
+		return DB.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Create(redemption).Error; err != nil {
+				return err
+			}
+			return tx.Model(redemption).Update("quota", 0).Error
+		})
 	}
-	var err error
-	err = DB.Create(redemption).Error
-	return err
+	return DB.Create(redemption).Error
 }
 
 func (redemption *Redemption) SelectUpdate() error {
@@ -204,14 +347,24 @@ func (redemption *Redemption) SelectUpdate() error {
 
 // Update Make sure your token's fields is completed, because this will update non-zero values
 func (redemption *Redemption) Update() error {
-	if redemption.Quota <= 0 {
-		return errors.New("redemption quota must be positive")
-	}
-	if err := common.ValidateWalletQuota(redemption.Quota); err != nil {
-		return err
+	redemption.NormalizeType()
+	if redemption.Type == RedemptionTypeSubscription {
+		if redemption.PlanId <= 0 {
+			return errors.New("subscription redemption code requires a plan")
+		}
+	} else {
+		if redemption.Type != RedemptionTypeQuota {
+			return errors.New("invalid redemption type")
+		}
+		if redemption.Quota <= 0 {
+			return errors.New("redemption quota must be positive")
+		}
+		if err := common.ValidateWalletQuota(redemption.Quota); err != nil {
+			return err
+		}
 	}
 	var err error
-	err = DB.Model(redemption).Select("name", "status", "quota", "redeemed_time", "expired_time").Updates(redemption).Error
+	err = DB.Model(redemption).Select("name", "status", "type", "plan_id", "quota", "redeemed_time", "expired_time").Updates(redemption).Error
 	return err
 }
 

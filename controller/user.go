@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -651,7 +652,15 @@ func GetUserModels(c *gin.Context) {
 
 func UpdateUser(c *gin.Context) {
 	var updatedUser model.User
-	err := common.DecodeJson(c.Request.Body, &updatedUser)
+	var request map[string]json.RawMessage
+	err := common.DecodeJson(c.Request.Body, &request)
+	if err == nil {
+		var encoded []byte
+		encoded, err = common.Marshal(request)
+		if err == nil {
+			err = common.Unmarshal(encoded, &updatedUser)
+		}
+	}
 	if err != nil || updatedUser.Id == 0 {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
@@ -680,6 +689,19 @@ func UpdateUser(c *gin.Context) {
 		common.ApiErrorT(c, "No permission to update users of same or higher permission level")
 		return
 	}
+	_, updateAffiliateRate := request["aff_reward_rate"]
+	rateChanged := updateAffiliateRate &&
+		((originUser.AffRewardRate == nil) != (updatedUser.AffRewardRate == nil) ||
+			(originUser.AffRewardRate != nil && updatedUser.AffRewardRate != nil && *originUser.AffRewardRate != *updatedUser.AffRewardRate))
+	if updatedUser.AffRewardRate != nil && (*updatedUser.AffRewardRate < 0 || *updatedUser.AffRewardRate > operation_setting.MaxAffiliateRewardRate) {
+		common.ApiErrorT(c, "Referral rebate rate must be between 0 and 100% with at most two decimal places")
+		return
+	}
+	if rateChanged && updatedUser.AffRewardRate != nil && *updatedUser.AffRewardRate > 0 && !operation_setting.IsPaymentComplianceConfirmed() {
+		common.ApiErrorT(c, "Payment, redemption, subscription, and invitation reward features are disabled. The administrator must confirm compliance terms before enabling them.")
+		return
+	}
+	requestedAffiliateRate := updatedUser.AffRewardRate
 	updatePassword := updatedUser.Password != ""
 	auditParams := map[string]any{
 		"username": originUser.Username,
@@ -687,7 +709,7 @@ func UpdateUser(c *gin.Context) {
 	}
 	// Resetting a password or rewriting the admin permission matrix changes what
 	// the managed account can do or who can sign in to it.
-	if updatePassword || updatedUser.AdminPermissions != nil {
+	if updatePassword || updatedUser.AdminPermissions != nil || rateChanged {
 		authorization := requireAdminUserProof(c, service.VerificationScopeAdminUserUpdate, service.AdminUserContext{UserID: updatedUser.Id})
 		if authorization == nil {
 			return
@@ -695,11 +717,20 @@ func UpdateUser(c *gin.Context) {
 		auditParams["verification_method"] = authorization.Method
 		auditParams["password_reset"] = updatePassword
 		auditParams["admin_permissions_updated"] = updatedUser.AdminPermissions != nil
+		if rateChanged {
+			auditParams["affiliate_reward_rate_before"] = originUser.AffRewardRate
+			auditParams["affiliate_reward_rate_after"] = updatedUser.AffRewardRate
+		}
 	}
 	authzTouched := false
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
 		if err := updatedUser.EditWithTx(tx, updatePassword); err != nil {
 			return err
+		}
+		if rateChanged {
+			if err := tx.Model(&model.User{}).Where("id = ?", updatedUser.Id).Update("aff_reward_rate", requestedAffiliateRate).Error; err != nil {
+				return err
+			}
 		}
 		touched, err := updateAdminPermissionsForUserInTx(c, tx, updatedUser.Id, originUser.Role, updatedUser.AdminPermissions)
 		authzTouched = touched
@@ -1301,17 +1332,29 @@ func TopUp(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	quota, err := model.Redeem(req.Key, id)
+	redemption, err := model.RedeemCode(req.Key, id)
 	if err != nil {
 		// 不向用户暴露兑换失败的细分原因，避免攻击者根据错误类型判断兑换码状态。
 		common.ApiErrorT(c, "Redemption failed, please try again later")
-		logger.LogError(c, common.LogText("failed to redeem key %s for user %d: %s", req.Key, id, err.Error()))
+		logger.LogError(c, common.LogText("failed to redeem code for user %d: %s", id, err.Error()))
+		return
+	}
+	if redemption.Type == model.RedemptionTypeSubscription {
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "",
+			"data": gin.H{
+				"type":       redemption.Type,
+				"plan_id":    redemption.PlanId,
+				"plan_title": redemption.PlanTitle,
+			},
+		})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    quota,
+		"data":    redemption.Quota,
 	})
 }
 
