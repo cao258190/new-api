@@ -169,8 +169,12 @@ describe('usage facts billing details', () => {
       })
     )
 
-    expect(rowValue('Input')).toBe('$2/M')
-    expect(rowValue('Output')).toBe('$10/M')
+    screen.getAllByText('Input').forEach((label) => {
+      expect(label.nextElementSibling?.textContent).toBe('$2/M')
+    })
+    screen.getAllByText('Output').forEach((label) => {
+      expect(label.nextElementSibling?.textContent).toBe('$10/M')
+    })
   })
 
   test('shows the settled image count and a per-image price', () => {
