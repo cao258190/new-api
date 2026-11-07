@@ -15,10 +15,10 @@ concurrency:
 # requested no tests for this follow-up; local typecheck and targeted lint passed.
 # Production publishing remains a separate, protected registry workflow.
 env:
-  SOURCE_SHA: 330c81af34835ef463285cd75cd0086f193cf7e0
+  SOURCE_SHA: 84b077300f5d77d26c73b6cf8f6691556ca68ddb
   UPSTREAM_SHA: ea343c4a81151bfd537d33b66527c25fa21a1112
-  RELEASE_VERSION: custom-v2026.11.07.1-rc.1
-  IMAGE_REF: new-api-staging:custom-v2026.11.07.1-rc.1
+  RELEASE_VERSION: custom-v2026.11.07.1-rc.2
+  IMAGE_REF: new-api-staging:custom-v2026.11.07.1-rc.2
 
 jobs:
   build:
