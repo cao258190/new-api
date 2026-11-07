@@ -53,6 +53,27 @@ function matchedLabels(
 }
 
 describe('breakdown tier matched-row highlight', () => {
+  test('uses token facts to distinguish same-label token tiers', () => {
+    const tiers = parseTiersFromExpr(
+      '(len <= 272000) ? ((c <= 1) ? tier("0_272k", p * 0 + c * 0) : tier("0_272k", p * 2 + c * 10)) : tier("base", p * 4 + c * 15)'
+    )
+
+    assert.deepEqual(
+      tiers
+        .filter((tier) =>
+          isBreakdownTierMatched(tier, tiers, '0_272k', { len: 100, c: 2 })
+        )
+        .map((tier) => tier.label),
+      ['0_272k']
+    )
+    assert.deepEqual(
+      tiers
+        .filter((tier) => isBreakdownTierMatched(tier, tiers, '0_272k'))
+        .map((tier) => tier.label),
+      []
+    )
+  })
+
   test('uses the recorded unit and fixed price when token and request branches share a label', () => {
     const tiers = parseTiersFromExpr(
       'len < 1000 ? tier("base", p * 2) : tier("base", fixed(0.01))'

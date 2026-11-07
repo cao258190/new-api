@@ -34,6 +34,32 @@ function tierMatchesNormalizedLabel(
   )
 }
 
+function tokenTierMatchesFacts(
+  tier: ParsedTier,
+  usageFacts: Record<string, string | number>
+): boolean {
+  return (
+    tier.conditions.length > 0 &&
+    tier.conditions.every((condition) => {
+      const rawValue = usageFacts[condition.var]
+      const value = Number(rawValue)
+      if (!Number.isFinite(value)) return false
+      switch (condition.op) {
+        case '<':
+          return value < condition.value
+        case '<=':
+          return value <= condition.value
+        case '>':
+          return value > condition.value
+        case '>=':
+          return value >= condition.value
+        default:
+          return false
+      }
+    })
+  )
+}
+
 /**
  * Decide whether a price-table row is the settlement hit.
  * Label equality (after normalizeTierLabel) wins; usage-facts matching is
@@ -60,25 +86,44 @@ export function isBreakdownTierMatched(
   const normalizedMatchedTierLabel = normalizeTierLabel(
     matchedTierLabel ?? undefined
   )
+  if (
+    !normalizedMatchedTierLabel &&
+    usageFacts &&
+    !('unitPrices' in tier) &&
+    tiers.every(
+      (candidate) =>
+        !('unitPrices' in candidate) && candidate.conditions.length > 0
+    )
+  ) {
+    const matchedTiers = tiers.filter(
+      (candidate) =>
+        !('unitPrices' in candidate) &&
+        tokenTierMatchesFacts(candidate, usageFacts)
+    )
+    return matchedTiers.length === 1 && matchedTiers[0] === tier
+  }
   if (tierMatchesNormalizedLabel(tier, normalizedMatchedTierLabel)) {
-    if (
-      'unitPrices' in tier &&
-      tiers.filter((candidate) =>
-        tierMatchesNormalizedLabel(candidate, normalizedMatchedTierLabel)
-      ).length > 1
-    ) {
+    const sameLabelTiers = tiers.filter((candidate) =>
+      tierMatchesNormalizedLabel(candidate, normalizedMatchedTierLabel) &&
+      ('unitPrices' in candidate ||
+        !billingUnit ||
+        ((candidate.billingUnit ?? 'token') === billingUnit &&
+          (billingUnit !== 'request' ||
+            fixedPrice === undefined ||
+            candidate.fixedPrice === fixedPrice)))
+    )
+    if (sameLabelTiers.length > 1) {
       // Expanded rows can share one engine label. Time-dependent rows cannot
       // be resolved from usage alone; never substitute the current wall clock.
-      return (
-        !tier.conditionText &&
-        Boolean(usageFacts) &&
-        tier.conditions.length > 0 &&
-        tier.conditions.every(
+      if (!usageFacts || tier.conditionText) return false
+      if ('unitPrices' in tier) {
+        return tier.conditions.length > 0 && tier.conditions.every(
           (condition) =>
             'field' in condition &&
-            String(usageFacts?.[condition.field]) === condition.value
+            String(usageFacts[condition.field]) === condition.value
         )
-      )
+      }
+      return tokenTierMatchesFacts(tier, usageFacts)
     }
     return true
   }

@@ -160,6 +160,40 @@ describe('expression price summaries', () => {
       )
     ).toBe(true)
   })
+  test('expands nested token tiers and summarizes their per-token price ranges', () => {
+    const expression =
+      '(len <= 272000) ? ((c <= 1) ? tier("0_272k", p * 0 + c * 0 + cr * 0 + cc * 0) : tier("0_272k", p * 2 + c * 10 + cr * 0.1 + cc * 2.5)) : tier("base", p * 4 + c * 15 + cr * 0.2 + cc * 5)'
+    const summary = getDynamicPricingSummary(
+      pricingModel({ billing_mode: 'tiered_expr', billing_expr: expression }),
+      { tokenUnit: 'M' }
+    )
+
+    expect(summary?.isSpecialExpression).toBe(false)
+    expect(summary?.tierCount).toBe(3)
+    expect(summary?.primaryEntries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          field: 'inputPrice',
+          formattedRange: '$0 – $4',
+        }),
+        expect.objectContaining({
+          field: 'outputPrice',
+          formattedRange: '$0 – $15',
+        }),
+      ])
+    )
+    expect(summary?.tiers.map((tier) => tier.conditions)).toEqual([
+      [
+        { var: 'len', op: '<=', value: 272000 },
+        { var: 'c', op: '<=', value: 1 },
+      ],
+      [
+        { var: 'len', op: '<=', value: 272000 },
+        { var: 'c', op: '>', value: 1 },
+      ],
+      [{ var: 'len', op: '>', value: 272000 }],
+    ])
+  })
   test('preserves a versioned parenthesized base price and its request rule', () => {
     const summary = getDynamicPricingSummary(
       pricingModel({

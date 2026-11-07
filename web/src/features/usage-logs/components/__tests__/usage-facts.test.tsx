@@ -33,6 +33,9 @@ const i18nKeys = {
   'Per-token': 'Per-token',
   'Dynamic Pricing': 'Dynamic Pricing',
   'Matched Tier': 'Matched Tier',
+  Matched: 'Matched',
+  Input: 'Input',
+  Output: 'Output',
   'Group Ratio': 'Group Ratio',
   'Total Cost': 'Total Cost',
   'Usage parameters': 'Usage parameters',
@@ -153,6 +156,30 @@ test('keeps one cache write row and no cache prices for OpenAI logs without 12-h
 })
 
 describe('usage facts billing details', () => {
+  test('highlights only the matching same-label tier from recorded token facts', () => {
+    queryClients.push(
+      renderDetails({
+        billing_mode: 'tiered_expr',
+        expr_b64: btoa(
+          '(len <= 272000) ? ((c <= 1) ? tier("0_272k", p * 0 + c * 0) : tier("0_272k", p * 2 + c * 10)) : tier("base", p * 4 + c * 15)'
+        ),
+        billing_unit: 'token',
+        matched_tier: '0_272k',
+        tier_facts: { p: 100, c: 2, len: 100 },
+      })
+    )
+
+    const billingDetails = within(
+      screen.getByText('Billing Details').parentElement as HTMLElement
+    )
+    expect(
+      billingDetails.getByText('Input').nextElementSibling?.textContent
+    ).toBe('$2/M')
+    expect(
+      billingDetails.getByText('Output').nextElementSibling?.textContent
+    ).toBe('$10/M')
+  })
+
   test('shows the settled image count and a per-image price', () => {
     const queryClient = renderDetails({
       billing_mode: 'tiered_expr',

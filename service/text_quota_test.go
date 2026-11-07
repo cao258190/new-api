@@ -286,6 +286,22 @@ func runFixedPriceAccountingCases(t *testing.T, db, logDB *gorm.DB) {
 							assert.Equal(t, float64(100), billable["cr"])
 							assert.Equal(t, float64(400), billable["img"])
 						}
+					} else if tc.unit == billingexpr.BillingUnitToken {
+						facts, ok := other["tier_facts"].(map[string]any)
+						assert.True(t, ok)
+						expectedPromptTokens := tc.estimate
+						expectedCompletionTokens := 0
+						if tc.usage != nil {
+							expectedPromptTokens = tc.usage.PromptTokens
+							expectedCompletionTokens = tc.usage.CompletionTokens
+						}
+						if ok {
+							assert.Equal(t, float64(expectedPromptTokens), facts["p"])
+							assert.Equal(t, float64(expectedCompletionTokens), facts["c"])
+							assert.Equal(t, float64(expectedPromptTokens), facts["len"])
+						}
+						assert.NotContains(t, other, "billing_tokens")
+						assert.NotContains(t, other, "image_cache_tokens")
 					} else {
 						assert.NotContains(t, other, "billing_tokens")
 						assert.NotContains(t, other, "image_cache_tokens")
