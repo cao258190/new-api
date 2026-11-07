@@ -1,0 +1,333 @@
+name: Build custom NewAPI image
+
+on:
+  push:
+    tags:
+      - 'custom-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing custom-v tag to build'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: custom-image-${{ github.workflow }}-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  # Replace with a lowercase GHCR path owned by the Fork maintainer.
+  IMAGE_NAME: ghcr.io/cao258190/new-api-custom
+
+jobs:
+  prepare:
+    name: Validate release tag
+    outputs:
+      release_tag: ${{ steps.release.outputs.tag }}
+      commit_sha: ${{ steps.release.outputs.commit_sha }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      RELEASE_REF: ${{ inputs.tag || github.ref }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Check out release ref
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ env.RELEASE_REF }}
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Manual release runs must be dispatched from the protected main branch"
+            exit 1
+          fi
+          tag="$RELEASE_TAG"
+          [[ "$tag" =~ ^custom-v[0-9A-Za-z._-]+$ ]] || {
+            echo "::error::Only valid custom-v* tags may be published"
+            exit 1
+          }
+          git show-ref --verify --quiet "refs/tags/$tag" || {
+            echo "::error::Release tag '$tag' does not exist"
+            exit 1
+          }
+          tag_commit="$(git rev-parse --verify "refs/tags/$tag^{commit}")"
+          commit_sha="$(git rev-parse --verify HEAD)"
+          [[ "$tag_commit" == "$commit_sha" ]] || {
+            echo "::error::The checked out commit does not match the release tag"
+            exit 1
+          }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "commit_sha=$commit_sha" >> "$GITHUB_OUTPUT"
+          echo "Checked out commit: $commit_sha"
+
+  build:
+    name: Build ${{ matrix.arch }} image
+    needs: prepare
+    # Configure this environment with required reviewers and allowed refs
+    # (protected main plus custom-v* tags) before using the workflow in production.
+    environment:
+      name: image-publish
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+      COMMIT_SHA: ${{ needs.prepare.outputs.commit_sha }}
+
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ env.COMMIT_SHA }}
+          fetch-depth: 1
+
+      - name: Write VERSION
+        shell: bash
+        run: |
+          printf '%s\n' "$RELEASE_TAG" > VERSION
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4 # v4.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push architecture image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ env.RELEASE_TAG }}-${{ matrix.arch }}
+            ${{ env.IMAGE_NAME }}:sha-${{ env.COMMIT_SHA }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=new-api-custom-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=new-api-custom-${{ matrix.arch }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Save architecture digest
+        shell: bash
+        run: |
+          digest="${{ steps.build.outputs.digest }}"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "::error::Build did not return a valid image digest"
+            exit 1
+          }
+          printf '%s\n' "$digest" > "image-digest-${{ matrix.arch }}.txt"
+          {
+            echo "### Architecture image digest (${{ matrix.arch }})"
+            echo '```'
+            echo "${IMAGE_NAME}:${RELEASE_TAG}-${{ matrix.arch }}"
+            echo "$digest"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload architecture digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-digest-${{ matrix.arch }}
+          path: image-digest-${{ matrix.arch }}.txt
+          if-no-files-found: error
+
+  scan:
+    name: Scan ${{ matrix.arch }} image
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+
+    steps:
+      - name: Log in to GHCR for scanning
+        uses: docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4 # v4.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan image for vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ env.RELEASE_TAG }}-${{ matrix.arch }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+
+  manifest:
+    name: Create multi-architecture manifest
+    needs: [prepare, build, scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: image-publish
+    permissions:
+      packages: write
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+      COMMIT_SHA: ${{ needs.prepare.outputs.commit_sha }}
+
+    steps:
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4 # v4.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download amd64 digest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: image-digest-amd64
+          path: architecture-digests/amd64
+
+      - name: Download arm64 digest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: image-digest-arm64
+          path: architecture-digests/arm64
+
+      - name: Create version manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$RELEASE_TAG"
+          docker buildx imagetools create \
+            -t "${IMAGE_NAME}:${tag}" \
+            -t "${IMAGE_NAME}:sha-${COMMIT_SHA}" \
+            "${IMAGE_NAME}:${tag}-amd64" \
+            "${IMAGE_NAME}:${tag}-arm64"
+
+      - name: Inspect manifest
+        id: inspect
+        shell: bash
+        run: |
+          set -euo pipefail
+          inspection="$(docker buildx imagetools inspect "${IMAGE_NAME}:${RELEASE_TAG}")"
+          printf '%s\n' "$inspection"
+          expected_amd64="$(tr -d '\r\n' < architecture-digests/amd64/image-digest-amd64.txt)"
+          expected_arm64="$(tr -d '\r\n' < architecture-digests/arm64/image-digest-arm64.txt)"
+          actual_for_platform() {
+            local platform="$1"
+            awk -v platform="$platform" '
+              $1 == "Platform:" && $2 == platform { found=1; next }
+              found && $1 == "Digest:" { print $2; exit }
+              $1 == "Platform:" { found=0 }
+            '
+          }
+          actual_amd64="$(printf '%s\n' "$inspection" | actual_for_platform linux/amd64)"
+          actual_arm64="$(printf '%s\n' "$inspection" | actual_for_platform linux/arm64)"
+          [[ "$actual_amd64" == "$expected_amd64" ]] || {
+            echo "::error::The manifest amd64 digest does not match the build output"
+            exit 1
+          }
+          [[ "$actual_arm64" == "$expected_arm64" ]] || {
+            echo "::error::The manifest arm64 digest does not match the build output"
+            exit 1
+          }
+          digest="$(printf '%s\n' "$inspection" | awk '$1 == "Digest:" { print $2; exit }')"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "::error::Unable to resolve a valid multi-architecture manifest digest"
+            exit 1
+          }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Published image"
+            echo '```'
+            echo "image=${IMAGE_NAME}"
+            echo "tag=${RELEASE_TAG}"
+            echo "commit_sha=${COMMIT_SHA}"
+            echo "digest=${digest}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign final manifest digest
+        shell: bash
+        env:
+          MANIFEST_DIGEST: ${{ steps.inspect.outputs.digest }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "${IMAGE_NAME}@${MANIFEST_DIGEST}"
+
+      - name: Verify final manifest signature
+        shell: bash
+        env:
+          MANIFEST_DIGEST: ${{ steps.inspect.outputs.digest }}
+        run: |
+          set -euo pipefail
+          certificate_identity="https://github.com/${GITHUB_WORKFLOW_REF}"
+          cosign verify \
+            --certificate-identity "$certificate_identity" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${IMAGE_NAME}@${MANIFEST_DIGEST}"
+
+      - name: Write verified release metadata
+        shell: bash
+        env:
+          MANIFEST_DIGEST: ${{ steps.inspect.outputs.digest }}
+        run: |
+          set -euo pipefail
+          expected_amd64="$(tr -d '\r\n' < architecture-digests/amd64/image-digest-amd64.txt)"
+          expected_arm64="$(tr -d '\r\n' < architecture-digests/arm64/image-digest-arm64.txt)"
+          {
+            printf 'image=%s\n' "$IMAGE_NAME"
+            printf 'tag=%s\n' "$RELEASE_TAG"
+            printf 'commit_sha=%s\n' "$COMMIT_SHA"
+            printf 'manifest_digest=%s\n' "$MANIFEST_DIGEST"
+            printf 'amd64_digest=%s\n' "$expected_amd64"
+            printf 'arm64_digest=%s\n' "$expected_arm64"
+            printf 'vulnerability_scan=trivy HIGH,CRITICAL (ignore-unfixed=true)\n'
+            printf 'signature=cosign keyless OIDC verified\n'
+          } > release-metadata.txt
+
+      - name: Upload release metadata
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-metadata-${{ env.RELEASE_TAG }}
+          path: release-metadata.txt
+          if-no-files-found: error
