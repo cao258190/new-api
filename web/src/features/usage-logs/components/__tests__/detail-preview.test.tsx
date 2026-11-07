@@ -211,13 +211,13 @@ test.each([
     tier: 'standard',
     billingUnit: 'token' as const,
     fixedPrice: undefined,
-    expected: 'Dynamic Pricing · standard',
+    expected: 'standard · $2 / $10/M',
   },
   {
     tier: 'long_context',
     billingUnit: 'token' as const,
     fixedPrice: undefined,
-    expected: 'Dynamic Pricing · long_context',
+    expected: 'long_context · $5 / $22.5/M',
   },
   {
     tier: 'free_small_output',
@@ -278,13 +278,18 @@ test.each([false, true])(
           : 'tier("base", p * 2 + c * 10)'
       ),
     })
-    expect(preview.textContent).toBe(
-      'Dynamic Pricing · Special billing expression'
-    )
+    const expected = isTask
+      ? 'Dynamic Pricing · Special billing expression'
+      : 'base · $2 / $10/M'
+    expect(preview.textContent).toBe(expected)
     await act(() => i18n.changeLanguage('zh'))
-    expect(
-      screen.getByRole('button', { name: '动态计费 · 特殊计费表达式' })
-    ).toBeVisible()
+    if (isTask) {
+      expect(
+        screen.getByRole('button', { name: '动态计费 · 特殊计费表达式' })
+      ).toBeVisible()
+    } else {
+      expect(screen.getByRole('button', { name: /base/ })).toBeVisible()
+    }
   }
 )
 

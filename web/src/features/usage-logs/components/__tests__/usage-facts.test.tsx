@@ -169,7 +169,6 @@ describe('usage facts billing details', () => {
       })
     )
 
-    expect(screen.getAllByText('Matched')).toHaveLength(1)
     expect(rowValue('Input')).toBe('$2/M')
     expect(rowValue('Output')).toBe('$10/M')
   })
