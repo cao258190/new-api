@@ -516,6 +516,42 @@ export function getDynamicPricingSummary(
   })
   let isMixedBilling = false
   if (!isTaskUsage) {
+    const completeTokenTiers = tiers.every(
+      (item) =>
+        !isTaskPricingTier(item) &&
+        item.conditions.length > 0 &&
+        item.billingUnit !== 'request'
+    )
+    if (tiers.length > 1 && completeTokenTiers) {
+      const tierEntries = tiers.map((item) =>
+        getDynamicPriceEntries(item as ParsedTier, options)
+      )
+      const fieldKeys = tierEntries.map((items) =>
+        items.map((entry) => entry.field).sort().join('|')
+      )
+      if (new Set(fieldKeys).size === 1) {
+        entries = tierEntries[0].map((entry) => {
+          const values = tierEntries.map(
+            (items) =>
+              items.find((item) => item.field === entry.field)?.value ??
+              entry.value
+          )
+          const min = Math.min(...values)
+          const max = Math.max(...values)
+          return {
+            ...entry,
+            value: min,
+            minValue: min,
+            maxValue: max,
+            formatted: formatDynamicUnitPrice(min, options),
+            formattedRange:
+              min === max
+                ? undefined
+                : `${formatDynamicUnitPrice(min, options)} – ${formatDynamicUnitPrice(max, options)}`,
+          }
+        })
+      }
+    }
     const tokenTier = summaryTiers.find(
       (item) => !isTaskPricingTier(item) && item.billingUnit !== 'request'
     )

@@ -55,6 +55,26 @@ const quotaSchema = z.object({
   QuotaForNewUser: z.coerce.number().min(0),
   QuotaForInviter: z.coerce.number().min(0),
   QuotaForInvitee: z.coerce.number().min(0),
+  AffiliateRewardRate: z.coerce
+    .number()
+    .min(0, {
+      error: () =>
+        i18next.t(
+          'Referral rebate rate must be between 0 and 100% with at most two decimal places'
+        ),
+    })
+    .max(100, {
+      error: () =>
+        i18next.t(
+          'Referral rebate rate must be between 0 and 100% with at most two decimal places'
+        ),
+    })
+    .refine((value) => /^\d+(?:\.\d{1,2})?$/.test(String(value)), {
+      error: () =>
+        i18next.t(
+          'Referral rebate rate must be between 0 and 100% with at most two decimal places'
+        ),
+    }),
   TopUpLink: z.string(),
   quota_setting: z.object({
     enable_free_model_pre_consume: z.boolean(),
@@ -109,7 +129,10 @@ export function QuotaSettingsSection({
         for (const [key, value] of Object.entries(changedFields)) {
           await updateOption.mutateAsync({
             key,
-            value: value as string | number | boolean,
+            value:
+              key === 'AffiliateRewardRate'
+                ? Math.round(Number(value) * 100)
+                : (value as string | number | boolean),
           })
         }
       },
@@ -273,6 +296,35 @@ export function QuotaSettingsSection({
                     {t('Quota given to invited users ({{formattedQuota}})', {
                       formattedQuota: formatQuotaInputValue(field.value),
                     })}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name='AffiliateRewardRate'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Default referral rebate rate (%)')}</FormLabel>
+                  <FormControl>
+                    <Input
+                      type='number'
+                      min={0}
+                      max={100}
+                      step={0.01}
+                      value={field.value ?? ''}
+                      onChange={handleNumberChange(field.onChange)}
+                      name={field.name}
+                      onBlur={field.onBlur}
+                      ref={field.ref}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'Applied to inviters without a personal rate. Wallet top-ups and quota code redemptions qualify.'
+                    )}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

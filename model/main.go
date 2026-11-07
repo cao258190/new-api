@@ -350,6 +350,7 @@ func migrateDB() error {
 		&Option{},
 		&LoginEncryptionKey{},
 		&Redemption{},
+		&AffiliateReward{},
 		&Ability{},
 		&Log{},
 		&Midjourney{},

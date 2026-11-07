@@ -25,6 +25,7 @@ import { useSystemConfig } from '@/hooks/use-system-config'
 import { getSelf } from '@/lib/api'
 
 import { AffiliateRewardsCard } from './components/affiliate-rewards-card'
+import { AffiliateRewardsDialog } from './components/dialogs/affiliate-rewards-dialog'
 import { BillingHistoryDialog } from './components/dialogs/billing-history-dialog'
 import { CreemConfirmDialog } from './components/dialogs/creem-confirm-dialog'
 import { PaymentConfirmDialog } from './components/dialogs/payment-confirm-dialog'
@@ -73,12 +74,14 @@ export function Wallet(props: WalletProps) {
   const [paymentLoading, setPaymentLoading] = useState<string | null>(null)
   const [confirmDialogOpen, setConfirmDialogOpen] = useState(false)
   const [transferDialogOpen, setTransferDialogOpen] = useState(false)
+  const [affiliateRewardsOpen, setAffiliateRewardsOpen] = useState(false)
   const [billingDialogOpen, setBillingDialogOpen] = useState(false)
   const [redemptionCode, setRedemptionCode] = useState('')
   const [creemDialogOpen, setCreemDialogOpen] = useState(false)
   const [selectedCreemProduct, setSelectedCreemProduct] =
     useState<CreemProduct | null>(null)
   const [showSubscriptionPanel, setShowSubscriptionPanel] = useState(true)
+  const [subscriptionRefreshToken, setSubscriptionRefreshToken] = useState(0)
 
   const { status } = useStatus()
   const { currency } = useSystemConfig()
@@ -218,6 +221,7 @@ export function Wallet(props: WalletProps) {
     const success = await redeemCode(redemptionCode)
     if (success) {
       setRedemptionCode('')
+      setSubscriptionRefreshToken((value) => value + 1)
       await fetchUser()
     }
   }
@@ -336,6 +340,7 @@ export function Wallet(props: WalletProps) {
                 onAvailabilityChange={handleSubscriptionAvailabilityChange}
                 userQuota={user?.quota}
                 onPurchaseSuccess={fetchUser}
+                refreshToken={subscriptionRefreshToken}
               />
             </div>
 
@@ -343,6 +348,8 @@ export function Wallet(props: WalletProps) {
               user={user}
               affiliateLink={affiliateLink}
               onTransfer={() => setTransferDialogOpen(true)}
+              onViewRewards={() => setAffiliateRewardsOpen(true)}
+              rewardRate={topupInfo?.affiliate_reward_rate}
               complianceConfirmed={
                 topupInfo?.payment_compliance_confirmed !== false
               }
@@ -371,6 +378,11 @@ export function Wallet(props: WalletProps) {
         onConfirm={handleTransfer}
         availableQuota={user?.aff_quota ?? 0}
         transferring={transferring}
+      />
+
+      <AffiliateRewardsDialog
+        open={affiliateRewardsOpen}
+        onOpenChange={setAffiliateRewardsOpen}
       />
 
       <BillingHistoryDialog

@@ -181,7 +181,62 @@ function tokenTier(
   return { label: node.args[0].value, conditions, prices }
 }
 
-/** Legacy token summary contract: ordered linear chain, never a minimum or partial price extraction. */
+/**
+ * Invert a simple comparison when a nested conditional's false branch needs
+ * to retain the condition that led to it. Compound conditions are left to the
+ * raw-expression fallback because their complement is a disjunction, which
+ * cannot be represented by the tier table's conjunctive condition list.
+ */
+function invertTokenConditions(
+  conditions: TokenTierCondition[]
+): TokenTierCondition[] | null {
+  if (conditions.length !== 1) return null
+  const condition = conditions[0]
+  const inverse: Record<TokenTierCondition['op'], TokenTierCondition['op']> = {
+    '<': '>=',
+    '<=': '>',
+    '>': '<=',
+    '>=': '<',
+  }
+  return [{ ...condition, op: inverse[condition.op] }]
+}
+
+/** A tier tree is nested when either branch contains another conditional. */
+function hasNestedConditional(node: ExpressionNode): boolean {
+  if (node.kind !== 'conditional') return false
+  return (
+    node.yes.kind === 'conditional' ||
+    node.no.kind === 'conditional' ||
+    hasNestedConditional(node.yes) ||
+    hasNestedConditional(node.no)
+  )
+}
+
+/** Collect canonical token-price leaves with their full path conditions. */
+function readNestedTokenTiers(
+  node: ExpressionNode,
+  conditions: TokenTierCondition[]
+): TokenTier[] | null {
+  const tier = tokenTier(node, conditions)
+  if (tier) return [tier]
+  if (node.kind !== 'conditional') return null
+
+  const branchConditions = tokenConditions(node.condition)
+  if (!branchConditions) return null
+  const yes = readNestedTokenTiers(node.yes, [
+    ...conditions,
+    ...branchConditions,
+  ])
+  const inverseConditions = invertTokenConditions(branchConditions)
+  if (!yes || !inverseConditions) return null
+  const no = readNestedTokenTiers(node.no, [
+    ...conditions,
+    ...inverseConditions,
+  ])
+  return no ? [...yes, ...no] : null
+}
+
+/** Token summary contract: ordered complete tiers, never a partial price extraction. */
 export function readTokenTierChain(node: ExpressionNode): TokenTier[] | null {
   if (
     node.kind === 'conditional' &&
@@ -227,6 +282,9 @@ export function readTokenTierChain(node: ExpressionNode): TokenTier[] | null {
         )
       }
     }
+  }
+  if (hasNestedConditional(node)) {
+    return readNestedTokenTiers(node, [])
   }
   const tiers: TokenTier[] = []
   let remaining = node

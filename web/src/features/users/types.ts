@@ -50,6 +50,7 @@ export const userSchema = z.object({
   aff_count: z.number().optional(),
   aff_quota: z.number().optional(),
   aff_history_quota: z.number().optional(),
+  aff_reward_rate: z.number().nullable().optional(),
   inviter_id: z.number().optional(),
   linux_do_id: z.string().optional(),
   status: userStatusSchema,
@@ -125,6 +126,7 @@ export interface UserFormData {
   quota?: number // Only used when updating user
   group?: string // Only used when updating user
   remark?: string // Only used when updating user
+  aff_reward_rate?: number | null // Basis points; null uses the global default
   admin_permissions?: AdminPermissionMatrix
 }
 
