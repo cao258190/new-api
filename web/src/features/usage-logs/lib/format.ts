@@ -293,8 +293,8 @@ export function decodeBillingExprB64(exprB64: string | undefined): string {
 
 /**
  * Resolve which parsed tier corresponds to the matched_tier label in a log
- * entry. When multiple tiers share a label, recorded billing tokens select
- * the matching condition; missing or unknown facts do not guess unit prices.
+ * entry. When multiple tiers share a label, recorded usage facts select the
+ * matching condition; missing or unknown facts do not guess unit prices.
  */
 export function resolveMatchedTier(
   tiers: ParsedTier[],
@@ -311,7 +311,7 @@ export function resolveMatchedTier(
     : tiers
   if (matchedLabel && candidates.length === 0) return null
   if (candidates.length === 1) return candidates[0]
-  if (!billingTokens) return matchedLabel ? candidates[0] || null : null
+  if (!billingTokens) return candidates.length === 1 ? candidates[0] : null
 
   const matches = candidates.filter((tier) => {
     if (tier.conditions.length === 0) return false
@@ -382,7 +382,7 @@ export function getTieredBillingSummary(
   const tier = resolveMatchedTier(
     tiers,
     other.matched_tier,
-    other.billing_tokens
+    other.tier_facts ?? other.billing_tokens
   )
   if (
     other.billing_unit === 'request' &&

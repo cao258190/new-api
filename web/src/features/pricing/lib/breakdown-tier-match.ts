@@ -104,20 +104,23 @@ export function isBreakdownTierMatched(
   }
   if (tierMatchesNormalizedLabel(tier, normalizedMatchedTierLabel)) {
     const sameLabelTiers = tiers.filter((candidate) =>
-      tierMatchesNormalizedLabel(candidate, normalizedMatchedTierLabel)
+      tierMatchesNormalizedLabel(candidate, normalizedMatchedTierLabel) &&
+      ('unitPrices' in candidate ||
+        !billingUnit ||
+        ((candidate.billingUnit ?? 'token') === billingUnit &&
+          (billingUnit !== 'request' ||
+            fixedPrice === undefined ||
+            candidate.fixedPrice === fixedPrice)))
     )
-    if (sameLabelTiers.length > 1 && usageFacts) {
+    if (sameLabelTiers.length > 1) {
       // Expanded rows can share one engine label. Time-dependent rows cannot
       // be resolved from usage alone; never substitute the current wall clock.
-      if (tier.conditionText) return false
+      if (!usageFacts || tier.conditionText) return false
       if ('unitPrices' in tier) {
-        return (
-          tier.conditions.length > 0 &&
-          tier.conditions.every(
-            (condition) =>
-              'field' in condition &&
-              String(usageFacts[condition.field]) === condition.value
-          )
+        return tier.conditions.length > 0 && tier.conditions.every(
+          (condition) =>
+            'field' in condition &&
+            String(usageFacts[condition.field]) === condition.value
         )
       }
       return tokenTierMatchesFacts(tier, usageFacts)

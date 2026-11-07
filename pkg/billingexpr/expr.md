@@ -92,9 +92,10 @@ OpenAI 兼容图片接口可报告
 负数、超过总量或无法形成有效输入集合的明细会记录诊断并回退原有逻辑。
 Anthropic 的独立缓存计数语义不采用这一 OpenAI 图片拆分。
 
-图片缓存表达式的消费日志保存 `image_cache_tokens` 与 `billing_tokens`，后者由结算结果携带，
-通过公共日志注入记录实际参与结算的计价用量，覆盖文本、audio 和 realtime 入口。
-求值失败回退预扣时不伪造实际用量；固定价格和未引用 `img_cr` 的表达式不新增这些字段。
+成功的动态 token 计费日志保存 `tier_facts`（`p`、`c`、`len`），由结算结果携带并通过公共日志注入，
+覆盖文本、audio 和 realtime 入口。这样即使多个分支使用相同的档位名，日志详情也能根据条件还原唯一命中行。
+使用图片缓存表达式时还会额外保存 `image_cache_tokens` 与完整 `billing_tokens` 明细。固定价格表达式不保存这些 token 字段。
+求值失败回退预扣时不伪造实际用量。
 文本/图片日志的 `cache_tokens` 继续保留上游缓存总量。Images 的 `output_tokens` 是图片输出，
 内置图片价格使用 `c`，无需上游额外报告 `output_tokens_details.image_tokens`。
 
