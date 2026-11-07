@@ -85,9 +85,12 @@ type BillingSnapshot struct {
 
 // TieredResult holds everything needed after running tiered settlement.
 type TieredResult struct {
-	// BillingTokens records the actual normalized inputs for successful token
-	// billing that explicitly references img_cr. Logs serialize these through
-	// the shared injection path, not as additional snapshot state.
+	// TierFacts records the actual token values used by tier conditions. Logs
+	// serialize these through the shared injection path so the UI can resolve
+	// same-label tiers using their recorded conditions.
+	TierFacts map[string]float64 `json:"-"`
+	// BillingTokens records the full normalized inputs when image-cache billing
+	// needs its detailed breakdown in usage logs.
 	BillingTokens          *TokenParams       `json:"-"`
 	ImageCount             *int               `json:"image_count,omitempty"`
 	BillingUnit            BillingUnit        `json:"billing_unit"`
