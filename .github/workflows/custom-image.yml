@@ -172,7 +172,6 @@ jobs:
   scan:
     name: Scan ${{ matrix.arch }} image
     needs: [prepare, build]
-    runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
@@ -180,7 +179,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     env:
       RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
 
