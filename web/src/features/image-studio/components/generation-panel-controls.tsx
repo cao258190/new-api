@@ -94,7 +94,6 @@ export function AdvancedImageOptions(props: AdvancedImageOptionsProps) {
           onChange={(value) => props.onParamChange('background', value)}
           options={[
             ['', t('Default')],
-            ['transparent', t('Transparent')],
             ['opaque', t('Opaque')],
           ]}
           value={props.params.background}

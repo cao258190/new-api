@@ -12,19 +12,16 @@ import { useTranslation } from 'react-i18next'
 import { ModelGroupSelector } from '@/components/model-group-selector'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Textarea } from '@/components/ui/textarea'
 
-import {
-  IMAGE_STUDIO_MAX_IMAGES,
-  type ImageStudioGroupOption,
-  type ImageStudioMode,
-  type ImageStudioModelOption,
-  type ImageStudioParams,
+import type {
+  ImageStudioGroupOption,
+  ImageStudioMode,
+  ImageStudioModelOption,
+  ImageStudioParams,
 } from '../types'
-import { AdvancedImageOptions, ImageUpload } from './generation-panel-controls'
+import { ImageUpload } from './generation-panel-controls'
+import { ImageSettingsDialog } from './image-settings-dialog'
 
 type GenerationPanelProps = {
   params: ImageStudioParams
@@ -115,76 +112,13 @@ export function GenerationPanel(props: GenerationPanelProps) {
               />
             </div>
           )}
-          <div className='grid gap-3 sm:grid-cols-3'>
-            <div>
-              <Label htmlFor='image-n'>{t('Images')}</Label>
-              <Input
-                id='image-n'
-                max={IMAGE_STUDIO_MAX_IMAGES}
-                min={1}
-                onChange={(event) =>
-                  props.onParamChange(
-                    'n',
-                    Math.min(
-                      IMAGE_STUDIO_MAX_IMAGES,
-                      Math.max(1, Math.trunc(Number(event.target.value) || 1))
-                    )
-                  )
-                }
-                step={1}
-                type='number'
-                value={props.params.n}
-              />
-            </div>
-            <div>
-              <Label htmlFor='image-size'>{t('Size')}</Label>
-              <NativeSelect
-                id='image-size'
-                onChange={(event) =>
-                  props.onParamChange('size', event.target.value)
-                }
-                value={props.params.size}
-              >
-                <NativeSelectOption value='1024x1024'>
-                  1024×1024
-                </NativeSelectOption>
-                <NativeSelectOption value='1536x1024'>
-                  1536×1024
-                </NativeSelectOption>
-                <NativeSelectOption value='1024x1536'>
-                  1024×1536
-                </NativeSelectOption>
-                <NativeSelectOption value='auto'>
-                  {t('Auto')}
-                </NativeSelectOption>
-              </NativeSelect>
-            </div>
-            <div>
-              <Label htmlFor='image-quality'>{t('Quality')}</Label>
-              <NativeSelect
-                id='image-quality'
-                onChange={(event) =>
-                  props.onParamChange('quality', event.target.value)
-                }
-                value={props.params.quality}
-              >
-                <NativeSelectOption value='auto'>
-                  {t('Auto')}
-                </NativeSelectOption>
-                <NativeSelectOption value='low'>{t('Low')}</NativeSelectOption>
-                <NativeSelectOption value='medium'>
-                  {t('Medium')}
-                </NativeSelectOption>
-                <NativeSelectOption value='high'>
-                  {t('High')}
-                </NativeSelectOption>
-              </NativeSelect>
-            </div>
+          <div className='flex flex-wrap items-center justify-between gap-3'>
+            <ImageSettingsDialog
+              disabled={!isSessionReady}
+              params={props.params}
+              onParamChange={props.onParamChange}
+            />
           </div>
-          <AdvancedImageOptions
-            params={props.params}
-            onParamChange={props.onParamChange}
-          />
           {!props.isOptionsLoading && props.models.length === 0 && (
             <p className='text-muted-foreground text-sm'>
               {t('No GPT Image models are available for this group')}

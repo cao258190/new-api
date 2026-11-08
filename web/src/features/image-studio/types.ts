@@ -31,6 +31,8 @@ export type ImageStudioParams = {
   prompt: string
   n: number
   size: string
+  /** Whether custom dimensions should be rounded up to 16-pixel steps. */
+  align16?: boolean
   quality: string
   background: string
   output_format: string

@@ -6,7 +6,7 @@ it under the terms of the GNU Affero General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 */
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, test, vi } from 'vitest'
 
 import type { ImageStudioParams } from '../../types'
@@ -137,6 +137,59 @@ describe('image studio generation panel', () => {
     )
 
     expect(screen.getByRole('button', { name: 'Generate' })).toBeDisabled()
+  })
+
+  test('generation parameters are opened in a settings dialog', () => {
+    const onParamChange = vi.fn()
+    render(
+      <GenerationPanel
+        groups={[]}
+        inputPreview=''
+        isGenerating={false}
+        isOptionsLoading={false}
+        maskPreview=''
+        mode='generate'
+        models={[{ label: 'gpt-image-1', value: 'gpt-image-1' }]}
+        onGenerate={vi.fn()}
+        onInputImageChange={vi.fn()}
+        onMaskChange={vi.fn()}
+        onModeChange={vi.fn()}
+        onParamChange={onParamChange}
+        onRemoveInput={vi.fn()}
+        onRemoveMask={vi.fn()}
+        params={params}
+      />
+    )
+
+    expect(
+      screen.queryByLabelText('Custom image count')
+    ).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Image settings' }))
+
+    const dialog = screen.getByRole('dialog', { name: 'Image settings' })
+    expect(within(dialog).getByLabelText('Width')).toHaveValue(1024)
+    expect(within(dialog).getByLabelText('Height')).toHaveValue(1024)
+    expect(within(dialog).getByRole('button', { name: '4k' })).toHaveAttribute(
+      'aria-pressed',
+      'false'
+    )
+    fireEvent.change(within(dialog).getByLabelText('Width'), {
+      target: { value: '1031' },
+    })
+    fireEvent.blur(within(dialog).getByLabelText('Width'))
+    expect(onParamChange).toHaveBeenCalledWith('size', '1040x1024')
+
+    fireEvent.click(within(dialog).getByRole('button', { name: '2k' }))
+    expect(onParamChange).toHaveBeenCalledWith('size', '2048x2048')
+
+    fireEvent.click(within(dialog).getByRole('button', { name: '3 Images' }))
+    expect(onParamChange).toHaveBeenCalledWith('n', 3)
+
+    fireEvent.change(within(dialog).getByLabelText('Custom image count'), {
+      target: { value: '12' },
+    })
+    fireEvent.blur(within(dialog).getByLabelText('Custom image count'))
+    expect(onParamChange).toHaveBeenCalledWith('n', 12)
   })
 
   test('session controls stay disabled until local sessions finish loading', () => {

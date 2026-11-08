@@ -45,6 +45,7 @@ const DEFAULT_PARAMS: ImageStudioParams = {
   prompt: '',
   n: 1,
   size: '1024x1024',
+  align16: true,
   quality: 'auto',
   background: '',
   output_format: 'png',
