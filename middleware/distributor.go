@@ -42,6 +42,7 @@ func PlaygroundImageRequest() gin.HandlerFunc {
 			c.Request.URL.Path = "/v1/images/edits"
 		}
 		if c.Request.URL.Path == "/v1/images/generations" || c.Request.URL.Path == "/v1/images/edits" {
+			common.SetContextKey(c, constant.ContextKeyIsPlayground, true)
 			c.Request.URL.RawPath = ""
 		}
 		query := c.Request.URL.Query()

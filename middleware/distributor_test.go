@@ -213,9 +213,10 @@ func TestPlaygroundImageRequestMapsRelayPathAndSelectedGroup(t *testing.T) {
 	})
 	router.POST("/pg/images/generations", PlaygroundImageRequest(), func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
-			"path":  c.Request.URL.Path,
-			"group": common.GetContextKeyString(c, constant.ContextKeyUsingGroup),
-			"query": c.Request.URL.RawQuery,
+			"path":          c.Request.URL.Path,
+			"group":         common.GetContextKeyString(c, constant.ContextKeyUsingGroup),
+			"query":         c.Request.URL.RawQuery,
+			"is_playground": common.GetContextKeyBool(c, constant.ContextKeyIsPlayground),
 		})
 	})
 	request := httptest.NewRequest(http.MethodPost, "/pg/images/generations?group="+selectedGroup, strings.NewReader(`{"model":"gpt-image-1"}`))
@@ -224,7 +225,7 @@ func TestPlaygroundImageRequestMapsRelayPathAndSelectedGroup(t *testing.T) {
 
 	router.ServeHTTP(recorder, request)
 	require.Equal(t, http.StatusOK, recorder.Code)
-	assert.JSONEq(t, `{"path":"/v1/images/generations","group":"`+selectedGroup+`","query":""}`, recorder.Body.String())
+	assert.JSONEq(t, `{"path":"/v1/images/generations","group":"`+selectedGroup+`","query":"","is_playground":true}`, recorder.Body.String())
 }
 
 func TestPlaygroundImageRequestRejectsUnavailableGroup(t *testing.T) {
