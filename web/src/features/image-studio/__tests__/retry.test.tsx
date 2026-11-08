@@ -7,7 +7,13 @@ the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import {
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -157,7 +163,14 @@ describe('image studio retry', () => {
       </QueryClientProvider>
     )
 
-    const referenceImage = await screen.findByRole('img', {
+    const uploadButton = await screen.findByRole('button', {
+      name: 'Upload reference image',
+    })
+    const uploadArea = uploadButton.parentElement
+    if (!uploadArea) {
+      throw new Error('Reference image upload area was not rendered')
+    }
+    const referenceImage = await within(uploadArea).findByRole('img', {
       name: 'Reference image',
     })
     const currentPreview = referenceImage.getAttribute('src')
@@ -181,7 +194,49 @@ describe('image studio retry', () => {
       undefined
     )
     expect(
-      screen.getByRole('img', { name: 'Reference image' })
+      within(uploadArea).getByRole('img', { name: 'Reference image' })
     ).toHaveAttribute('src', currentPreview)
+  })
+
+  it('keeps an explicitly cleared draft image removed after session restore', async () => {
+    const user = userEvent.setup()
+    const sessionWithoutDraftImage: ImageStudioSession = {
+      ...session,
+      draft: {
+        mode: 'edit',
+        params: currentParams,
+        inputAssetId: undefined,
+      },
+    }
+    vi.mocked(loadImageSessions).mockResolvedValue([sessionWithoutDraftImage])
+
+    render(
+      <QueryClientProvider client={client}>
+        <ImageStudio />
+      </QueryClientProvider>
+    )
+
+    const uploadButton = await screen.findByRole('button', {
+      name: 'Upload reference image',
+    })
+    const uploadArea = uploadButton.parentElement
+    if (!uploadArea) {
+      throw new Error('Reference image upload area was not rendered')
+    }
+    await waitFor(() =>
+      expect(
+        within(uploadArea).queryByRole('img', { name: 'Reference image' })
+      ).not.toBeInTheDocument()
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Generate' }))
+
+    await waitFor(() => expect(requestImages).toHaveBeenCalledOnce())
+    expect(requestImages).toHaveBeenCalledWith(
+      currentParams,
+      'generate',
+      undefined,
+      undefined
+    )
   })
 })

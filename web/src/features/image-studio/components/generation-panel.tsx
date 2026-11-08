@@ -16,7 +16,6 @@ import { Textarea } from '@/components/ui/textarea'
 
 import type {
   ImageStudioGroupOption,
-  ImageStudioMode,
   ImageStudioModelOption,
   ImageStudioParams,
 } from '../types'
@@ -25,7 +24,6 @@ import { ImageSettingsDialog } from './image-settings-dialog'
 
 type GenerationPanelProps = {
   params: ImageStudioParams
-  mode: ImageStudioMode
   groups: ImageStudioGroupOption[]
   models: ImageStudioModelOption[]
   isOptionsLoading: boolean
@@ -33,7 +31,6 @@ type GenerationPanelProps = {
   isSessionReady?: boolean
   inputPreview: string
   maskPreview: string
-  onModeChange: (mode: ImageStudioMode) => void
   onParamChange: <K extends keyof ImageStudioParams>(
     key: K,
     value: ImageStudioParams[K]
@@ -52,46 +49,22 @@ export function GenerationPanel(props: GenerationPanelProps) {
 
   return (
     <Card className='mt-auto'>
-      <CardContent className='pt-4'>
-        <fieldset className='min-w-0 space-y-4' disabled={!isSessionReady}>
-          <div className='flex flex-wrap gap-2'>
-            <Button
-              aria-pressed={props.mode === 'generate'}
-              onClick={() => props.onModeChange('generate')}
-              variant={props.mode === 'generate' ? 'default' : 'outline'}
-            >
-              {t('Text to image')}
-            </Button>
-            <Button
-              aria-pressed={props.mode === 'edit'}
-              onClick={() => props.onModeChange('edit')}
-              variant={props.mode === 'edit' ? 'default' : 'outline'}
-            >
-              {t('Image to image')}
-            </Button>
-            <div className='flex min-w-0 basis-full justify-start sm:ml-auto sm:min-w-[260px] sm:flex-1 sm:basis-auto sm:justify-end'>
-              <ModelGroupSelector
-                disabled={props.isOptionsLoading || !isSessionReady}
-                groups={props.groups}
-                models={props.models}
-                onGroupChange={(value) => props.onParamChange('group', value)}
-                onModelChange={(value) => props.onParamChange('model', value)}
-                selectedGroup={props.params.group}
-                selectedModel={props.params.model}
-              />
-            </div>
-          </div>
+      <CardContent className='p-3'>
+        <fieldset
+          className='min-w-0 space-y-3'
+          disabled={!isSessionReady || props.isGenerating}
+        >
           <Textarea
             aria-label={t('Prompt')}
-            className='min-h-24'
+            className='min-h-28 resize-y border-0 bg-transparent shadow-none focus-visible:ring-0'
             onChange={(event) =>
               props.onParamChange('prompt', event.target.value)
             }
             placeholder={t('Describe the image you want to create...')}
             value={props.params.prompt}
           />
-          {props.mode === 'edit' && (
-            <div className='flex flex-wrap gap-3'>
+          <div className='flex flex-wrap items-center justify-between gap-3 border-t pt-3'>
+            <div className='flex min-w-0 flex-wrap items-center gap-2'>
               <ImageUpload
                 accept='image/png,image/jpeg,image/webp'
                 label={t('Upload reference image')}
@@ -101,54 +74,62 @@ export function GenerationPanel(props: GenerationPanelProps) {
                 previewAlt={t('Reference image')}
                 removeLabel={t('Remove reference image')}
               />
-              <ImageUpload
-                accept='image/png'
-                label={t('Upload mask')}
-                preview={props.maskPreview}
-                onChange={props.onMaskChange}
-                onRemove={props.onRemoveMask}
-                previewAlt={t('Mask image')}
-                removeLabel={t('Remove mask')}
+              {props.inputPreview && (
+                <ImageUpload
+                  accept='image/png'
+                  label={t('Upload mask')}
+                  preview={props.maskPreview}
+                  onChange={props.onMaskChange}
+                  onRemove={props.onRemoveMask}
+                  previewAlt={t('Mask image')}
+                  removeLabel={t('Remove mask')}
+                />
+              )}
+              <ImageSettingsDialog
+                disabled={!isSessionReady || props.isGenerating}
+                params={props.params}
+                onParamChange={props.onParamChange}
               />
             </div>
-          )}
-          <div className='flex flex-wrap items-center justify-between gap-3'>
-            <ImageSettingsDialog
-              disabled={!isSessionReady}
-              params={props.params}
-              onParamChange={props.onParamChange}
-            />
+            <div className='flex min-w-0 flex-wrap items-center justify-end gap-2'>
+              <ModelGroupSelector
+                disabled={props.isOptionsLoading || !isSessionReady}
+                groups={props.groups}
+                models={props.models}
+                onGroupChange={(value) => props.onParamChange('group', value)}
+                onModelChange={(value) => props.onParamChange('model', value)}
+                selectedGroup={props.params.group}
+                selectedModel={props.params.model}
+              />
+              <Button
+                disabled={
+                  props.isGenerating ||
+                  !isSessionReady ||
+                  props.isOptionsLoading ||
+                  !props.params.model
+                }
+                onClick={props.onGenerate}
+                size='lg'
+              >
+                {props.isGenerating ? (
+                  <>
+                    <Loader2 className='animate-spin' />
+                    {t('Generating...')}
+                  </>
+                ) : (
+                  <>
+                    <ImageIcon />
+                    {t('Generate')}
+                  </>
+                )}
+              </Button>
+            </div>
           </div>
           {!props.isOptionsLoading && props.models.length === 0 && (
             <p className='text-muted-foreground text-sm'>
               {t('No GPT Image models are available for this group')}
             </p>
           )}
-          <div className='flex justify-end'>
-            <Button
-              disabled={
-                props.isGenerating ||
-                !isSessionReady ||
-                props.isOptionsLoading ||
-                !props.params.model ||
-                (props.mode === 'edit' && !props.inputPreview)
-              }
-              onClick={props.onGenerate}
-              size='lg'
-            >
-              {props.isGenerating ? (
-                <>
-                  <Loader2 className='animate-spin' />
-                  {t('Generating...')}
-                </>
-              ) : (
-                <>
-                  <ImageIcon />
-                  {t('Generate')}
-                </>
-              )}
-            </Button>
-          </div>
         </fieldset>
       </CardContent>
     </Card>

@@ -12,6 +12,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
+import {
+  Conversation,
+  ConversationContent,
+  ConversationScrollButton,
+} from '@/components/ai-elements/conversation'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { EmptyState } from '@/components/empty-state'
 import { handleServerError } from '@/lib/handle-server-error'
@@ -21,6 +26,7 @@ import { getImageGroups, getImageModels, requestImages } from './api'
 import { GenerationPanel } from './components/generation-panel'
 import { ImageHistory } from './components/image-history'
 import { ImageStudioSessionSidebar } from './components/session-sidebar'
+import { getImageSessionTitle } from './lib/session-title'
 import {
   deleteImageAsset,
   deleteImageSession,
@@ -79,7 +85,6 @@ export function ImageStudio() {
   const [sessionsOwnerId, setSessionsOwnerId] = useState<number>()
   const [selectedId, setSelectedId] = useState('')
   const [params, setParams] = useState<ImageStudioParams>(DEFAULT_PARAMS)
-  const [mode, setMode] = useState<ImageStudioMode>('generate')
   const [inputImage, setInputImage] = useState<File>()
   const [mask, setMask] = useState<File>()
   const [inputAssetId, setInputAssetId] = useState<string>()
@@ -87,6 +92,10 @@ export function ImageStudio() {
   const [inputPreview, setInputPreview] = useState('')
   const [maskPreview, setMaskPreview] = useState('')
   const [isGenerating, setIsGenerating] = useState(false)
+  const [isSavingAttachment, setIsSavingAttachment] = useState(false)
+  const [pendingMessage, setPendingMessage] = useState<
+    { id: string; prompt: string } | undefined
+  >()
   const [deleteTarget, setDeleteTarget] = useState<string>()
   const [assetUrls, setAssetUrls] = useState<Record<string, string>>({})
   const draftTimer = useRef<number | null>(null)
@@ -114,12 +123,29 @@ export function ImageStudio() {
     setInputPreview('')
     setMaskPreview('')
     setAssetUrls({})
+    setIsSavingAttachment(false)
   }, [])
 
   const visibleSessions = sessionsOwnerId === userId ? sessions : []
+  const mode: ImageStudioMode =
+    inputImage || inputAssetId || inputPreview ? 'edit' : 'generate'
   const selectedSession = visibleSessions.find(
     (session) => session.id === selectedId
   )
+  const expectedInputAssetId = selectedSession?.draft
+    ? selectedSession.draft.inputAssetId
+    : selectedSession?.messages.at(-1)?.inputAssetId
+  const expectedMaskAssetId = selectedSession?.draft
+    ? selectedSession.draft.maskAssetId
+    : selectedSession?.messages.at(-1)?.maskAssetId
+  const isRestoringAttachments =
+    Boolean(
+      expectedInputAssetId &&
+      (!inputImage || inputAssetId !== expectedInputAssetId)
+    ) ||
+    Boolean(
+      expectedMaskAssetId && (!mask || maskAssetId !== expectedMaskAssetId)
+    )
   const selectedSessionRef = useRef(selectedSession)
   selectedSessionRef.current = selectedSession
   const groupsQuery = useQuery({
@@ -139,7 +165,6 @@ export function ImageStudio() {
     clearSessionImages()
     setSessions([])
     setSelectedId('')
-    setMode('generate')
     setParams(DEFAULT_PARAMS)
     setSessionsOwnerId(undefined)
     if (!userId) return
@@ -203,13 +228,17 @@ export function ImageStudio() {
     const sessionToRestore = selectedSessionRef.current
     if (!sessionToRestore) return
     clearSessionImages()
-    const assetIds = sessionToRestore.messages.flatMap((message) =>
-      message.results.flatMap((result) =>
-        result.assetId ? [result.assetId] : []
-      )
+    const assetIds = new Set(
+      sessionToRestore.messages.flatMap((message) => [
+        ...message.results.flatMap((result) =>
+          result.assetId ? [result.assetId] : []
+        ),
+        ...(message.inputAssetId ? [message.inputAssetId] : []),
+        ...(message.maskAssetId ? [message.maskAssetId] : []),
+      ])
     )
     Promise.all(
-      assetIds.map(async (assetId) => {
+      Array.from(assetIds, async (assetId) => {
         const asset = await loadImageAsset(userId, assetId)
         if (!asset?.blob) return null
         const url = URL.createObjectURL(asset.blob)
@@ -238,12 +267,14 @@ export function ImageStudio() {
 
     const latestMessage = sessionToRestore.messages.at(-1)
     const draft = sessionToRestore.draft
-    const restoredMode = draft?.mode ?? latestMessage?.mode ?? 'generate'
     const restoredParams = draft?.params ?? latestMessage?.params
-    const restoredInputId = draft?.inputAssetId ?? latestMessage?.inputAssetId
-    const restoredMaskId = draft?.maskAssetId ?? latestMessage?.maskAssetId
+    const restoredInputId = draft
+      ? draft.inputAssetId
+      : latestMessage?.inputAssetId
+    const restoredMaskId = draft
+      ? draft.maskAssetId
+      : latestMessage?.maskAssetId
     if (restoredParams) {
-      setMode(restoredMode)
       setParams(restoredParams)
       setInputAssetId(restoredInputId)
       setMaskAssetId(restoredMaskId)
@@ -255,25 +286,58 @@ export function ImageStudio() {
         assetId: string | undefined,
         setFile: (file?: File) => void,
         setPreview: (preview: string) => void
-      ) => {
-        if (!assetId) return
+      ): Promise<boolean> => {
+        if (!assetId) return true
         const asset = await loadImageAsset(userId, assetId)
-        if (cancelled || !asset?.blob) return
+        if (cancelled || !asset?.blob) return false
         const url = URL.createObjectURL(asset.blob)
         createdUrls.push(url)
         setFile(new File([asset.blob], asset.name, { type: asset.mimeType }))
         setPreview(url)
+        return true
       }
       void Promise.all([
-        restoreInput(restoredInputId, setInputImage, setInputPreview),
-        restoreInput(restoredMaskId, setMask, setMaskPreview),
-      ]).catch(() =>
-        toast.warning(
-          translateRef.current('Some local images could not be restored')
-        )
-      )
+        restoreInput(restoredInputId, setInputImage, setInputPreview).catch(
+          () => false
+        ),
+        restoreInput(restoredMaskId, setMask, setMaskPreview).catch(
+          () => false
+        ),
+      ]).then(([inputRestored, maskRestored]) => {
+        if (cancelled) return
+        const usableMaskRestored = inputRestored && maskRestored
+        if (!inputRestored) setInputAssetId(undefined)
+        if (!usableMaskRestored) {
+          setMask(undefined)
+          setMaskAssetId(undefined)
+          setMaskPreview('')
+        }
+        if (!inputRestored || !maskRestored) {
+          const updatedSession: ImageStudioSession = {
+            ...sessionToRestore,
+            draft: {
+              mode: inputRestored ? 'edit' : 'generate',
+              params: restoredParams,
+              inputAssetId: inputRestored ? restoredInputId : undefined,
+              maskAssetId: usableMaskRestored ? restoredMaskId : undefined,
+            },
+          }
+          setSessions((previous) =>
+            previous.map((session) =>
+              session.id === updatedSession.id ? updatedSession : session
+            )
+          )
+          void saveImageSession(userId, updatedSession).catch(() =>
+            toast.error(
+              translateRef.current('Image history could not be saved locally')
+            )
+          )
+          toast.warning(
+            translateRef.current('Some local images could not be restored')
+          )
+        }
+      })
     } else {
-      setMode('generate')
       setParams((previous) => ({
         ...DEFAULT_PARAMS,
         group: previous.group,
@@ -373,7 +437,6 @@ export function ImageStudio() {
       group: previous.group,
       model: previous.model,
     }))
-    setMode('generate')
   }
 
   const handleRename = (session: ImageStudioSession) => {
@@ -425,17 +488,54 @@ export function ImageStudio() {
       )
       return
     }
+    setIsSavingAttachment(true)
     const preview = URL.createObjectURL(file)
-    const previousAssetId = kind === 'input' ? inputAssetId : maskAssetId
+    const previousAssetIds =
+      kind === 'input' ? [inputAssetId, maskAssetId] : [maskAssetId]
     const assetId = crypto.randomUUID()
     if (kind === 'input') {
-      if (inputPreviewRef.current) URL.revokeObjectURL(inputPreviewRef.current)
+      const previousImageUsedInHistory = Boolean(
+        inputAssetId &&
+        selectedSession.messages.some(
+          (message) =>
+            message.inputAssetId === inputAssetId ||
+            message.maskAssetId === inputAssetId
+        )
+      )
+      const previousMaskUsedInHistory = Boolean(
+        maskAssetId &&
+        selectedSession.messages.some(
+          (message) =>
+            message.inputAssetId === maskAssetId ||
+            message.maskAssetId === maskAssetId
+        )
+      )
+      if (inputPreviewRef.current && !previousImageUsedInHistory) {
+        URL.revokeObjectURL(inputPreviewRef.current)
+      }
+      if (maskPreviewRef.current && !previousMaskUsedInHistory) {
+        URL.revokeObjectURL(maskPreviewRef.current)
+      }
       inputPreviewRef.current = preview
+      maskPreviewRef.current = ''
       setInputImage(file)
+      setMask(undefined)
       setInputPreview(preview)
+      setMaskPreview('')
       setInputAssetId(assetId)
+      setMaskAssetId(undefined)
     } else {
-      if (maskPreviewRef.current) URL.revokeObjectURL(maskPreviewRef.current)
+      const previousMaskUsedInHistory = Boolean(
+        maskAssetId &&
+        selectedSession.messages.some(
+          (message) =>
+            message.inputAssetId === maskAssetId ||
+            message.maskAssetId === maskAssetId
+        )
+      )
+      if (maskPreviewRef.current && !previousMaskUsedInHistory) {
+        URL.revokeObjectURL(maskPreviewRef.current)
+      }
       maskPreviewRef.current = preview
       setMask(file)
       setMaskPreview(preview)
@@ -462,15 +562,17 @@ export function ImageStudio() {
         setMaskPreview('')
         setMaskAssetId(undefined)
       }
+      setIsSavingAttachment(false)
       return
     }
+    setAssetUrls((previous) => ({ ...previous, [assetId]: preview }))
     const updated: ImageStudioSession = {
       ...selectedSession,
       draft: {
-        mode,
+        mode: kind === 'input' ? 'edit' : mode,
         params,
         inputAssetId: kind === 'input' ? assetId : inputAssetId,
-        maskAssetId: kind === 'mask' ? assetId : maskAssetId,
+        maskAssetId: kind === 'input' ? undefined : assetId,
       },
     }
     setSessions((previous) =>
@@ -480,9 +582,11 @@ export function ImageStudio() {
       await saveImageSession(userId, updated)
     } catch {
       toast.error(t('Image history could not be saved locally'))
+      setIsSavingAttachment(false)
       return
     }
-    if (previousAssetId) {
+    for (const previousAssetId of previousAssetIds) {
+      if (!previousAssetId) continue
       const isUsedByHistory = selectedSession.messages.some(
         (message) =>
           message.inputAssetId === previousAssetId ||
@@ -490,20 +594,31 @@ export function ImageStudio() {
       )
       if (!isUsedByHistory) {
         await deleteImageAsset(userId, previousAssetId).catch(() => undefined)
+        const previousUrl = assetUrlsRef.current[previousAssetId]
+        if (previousUrl) URL.revokeObjectURL(previousUrl)
+        setAssetUrls((previous) => {
+          const next = { ...previous }
+          delete next[previousAssetId]
+          return next
+        })
       }
     }
+    setIsSavingAttachment(false)
   }
 
   const removeUploadedFile = (kind: 'input' | 'mask') => {
     if (!selectedSession || !userId) return
-    const assetId = kind === 'input' ? inputAssetId : maskAssetId
-    const preview = kind === 'input' ? inputPreview : maskPreview
-    if (preview) URL.revokeObjectURL(preview)
+    const removedAssetIds =
+      kind === 'input' ? [inputAssetId, maskAssetId] : [maskAssetId]
     if (kind === 'input') {
       inputPreviewRef.current = ''
+      maskPreviewRef.current = ''
       setInputImage(undefined)
+      setMask(undefined)
       setInputPreview('')
+      setMaskPreview('')
       setInputAssetId(undefined)
+      setMaskAssetId(undefined)
     } else {
       maskPreviewRef.current = ''
       setMask(undefined)
@@ -511,11 +626,11 @@ export function ImageStudio() {
       setMaskAssetId(undefined)
     }
     const nextInputAssetId = kind === 'input' ? undefined : inputAssetId
-    const nextMaskAssetId = kind === 'mask' ? undefined : maskAssetId
+    const nextMaskAssetId: string | undefined = undefined
     const updated: ImageStudioSession = {
       ...selectedSession,
       draft: {
-        mode,
+        mode: nextInputAssetId ? 'edit' : 'generate',
         params,
         inputAssetId: nextInputAssetId,
         maskAssetId: nextMaskAssetId,
@@ -526,12 +641,24 @@ export function ImageStudio() {
     )
     void saveImageSession(userId, updated)
       .then(async () => {
-        if (!assetId) return
-        const usedByHistory = selectedSession.messages.some(
-          (message) =>
-            message.inputAssetId === assetId || message.maskAssetId === assetId
-        )
-        if (!usedByHistory) await deleteImageAsset(userId, assetId)
+        for (const assetId of removedAssetIds) {
+          if (!assetId) continue
+          const usedByHistory = selectedSession.messages.some(
+            (message) =>
+              message.inputAssetId === assetId ||
+              message.maskAssetId === assetId
+          )
+          if (!usedByHistory) {
+            await deleteImageAsset(userId, assetId)
+            const url = assetUrlsRef.current[assetId]
+            if (url) URL.revokeObjectURL(url)
+            setAssetUrls((previous) => {
+              const next = { ...previous }
+              delete next[assetId]
+              return next
+            })
+          }
+        }
       })
       .catch(() => toast.error(t('Image history could not be saved locally')))
   }
@@ -543,9 +670,10 @@ export function ImageStudio() {
   ) => {
     if (!userId || !selectedSession) return
     const requestParams = retryMessage?.params ?? params
-    const requestMode = retryMessage?.mode ?? mode
     const requestInput = retryMessage ? retryInput : inputImage
-    const requestMask = retryMessage ? retryMask : mask
+    const requestMode: ImageStudioMode = requestInput ? 'edit' : 'generate'
+    let requestMask: File | undefined
+    if (requestInput) requestMask = retryMessage ? retryMask : mask
     const prompt = requestParams.prompt.trim()
     if (!requestParams.model) {
       toast.error(t('No GPT Image models are available for this group'))
@@ -555,12 +683,45 @@ export function ImageStudio() {
       toast.error(t('Enter a prompt before generating'))
       return
     }
-    if (requestMode === 'edit' && !requestInput) {
-      toast.error(t('Upload a reference image for image-to-image mode'))
+    const requiresInputImage = retryMessage
+      ? retryMessage.mode === 'edit'
+      : Boolean(inputAssetId || inputPreview)
+    if (requiresInputImage && !requestInput) {
+      toast.error(t('Some local images could not be restored'))
       return
     }
-
     setIsGenerating(true)
+    const pending: {
+      id: string
+      prompt: string
+      inputPreview?: string
+      maskPreview?: string
+    } = { id: crypto.randomUUID(), prompt }
+    if (requestInput) {
+      pending.inputPreview = retryMessage?.inputAssetId
+        ? assetUrls[retryMessage.inputAssetId]
+        : inputPreview
+    }
+    if (requestMask) {
+      pending.maskPreview = retryMessage?.maskAssetId
+        ? assetUrls[retryMessage.maskAssetId]
+        : maskPreview
+    }
+    setPendingMessage(pending)
+    const startedSession: ImageStudioSession = {
+      ...selectedSession,
+      title:
+        selectedSession.messages.length === 0 &&
+        selectedSession.title === 'Untitled'
+          ? getImageSessionTitle(prompt)
+          : selectedSession.title,
+      updatedAt: Date.now(),
+    }
+    setSessions((previous) =>
+      previous.map((item) =>
+        item.id === startedSession.id ? startedSession : item
+      )
+    )
     const baseMessage: ImageStudioMessage = {
       id: crypto.randomUUID(),
       prompt,
@@ -568,8 +729,8 @@ export function ImageStudio() {
       params: requestParams,
       createdAt: Date.now(),
       status: 'complete',
-      inputAssetId: retryMessage?.inputAssetId ?? inputAssetId,
-      maskAssetId: retryMessage?.maskAssetId ?? maskAssetId,
+      inputAssetId: retryMessage ? retryMessage.inputAssetId : inputAssetId,
+      maskAssetId: retryMessage ? retryMessage.maskAssetId : maskAssetId,
       results: [],
     }
     try {
@@ -602,10 +763,7 @@ export function ImageStudio() {
         }
       }
       const updated: ImageStudioSession = {
-        ...selectedSession,
-        title: selectedSession.messages.length
-          ? selectedSession.title
-          : prompt.slice(0, 32),
+        ...startedSession,
         updatedAt: Date.now(),
         draft: {
           mode: requestMode,
@@ -614,7 +772,7 @@ export function ImageStudio() {
           maskAssetId: baseMessage.maskAssetId,
         },
         messages: [
-          ...selectedSession.messages,
+          ...startedSession.messages,
           {
             ...baseMessage,
             revisedPrompt: response.revisedPrompt,
@@ -625,10 +783,11 @@ export function ImageStudio() {
       setSessions((previous) =>
         previous.map((item) => (item.id === updated.id ? updated : item))
       )
+      setPendingMessage(undefined)
       await persistSession(updated)
     } catch (error) {
       const updated: ImageStudioSession = {
-        ...selectedSession,
+        ...startedSession,
         updatedAt: Date.now(),
         draft: {
           mode: requestMode,
@@ -637,7 +796,7 @@ export function ImageStudio() {
           maskAssetId: baseMessage.maskAssetId,
         },
         messages: [
-          ...selectedSession.messages,
+          ...startedSession.messages,
           {
             ...baseMessage,
             status: 'error',
@@ -649,9 +808,11 @@ export function ImageStudio() {
       setSessions((previous) =>
         previous.map((item) => (item.id === updated.id ? updated : item))
       )
+      setPendingMessage(undefined)
       await persistSession(updated)
       handleServerError(error, t('Generation failed'))
     } finally {
+      setPendingMessage(undefined)
       setIsGenerating(false)
     }
   }
@@ -708,7 +869,7 @@ export function ImageStudio() {
   return (
     <div className='flex min-h-0 flex-1 overflow-hidden'>
       <ImageStudioSessionSidebar
-        disabled={isGenerating || !selectedSession}
+        disabled={isGenerating || isSavingAttachment || !selectedSession}
         onCreate={handleNewSession}
         onDelete={setDeleteTarget}
         onRename={handleRename}
@@ -720,45 +881,55 @@ export function ImageStudio() {
         selectedId={selectedId}
         sessions={visibleSessions}
       />
-      <section className='flex min-w-0 flex-1 flex-col overflow-y-auto'>
-        <div className='mx-auto flex w-full max-w-6xl flex-1 flex-col gap-5 p-4 md:p-6'>
+      <section className='flex min-w-0 flex-1 flex-col overflow-hidden'>
+        <div className='mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col gap-5 p-4 md:p-6'>
           <div>
             <h1 className='text-xl font-semibold'>{t('Image Studio')}</h1>
             <p className='text-muted-foreground text-sm'>
               {t('Create and edit images with GPT Image models')}
             </p>
           </div>
-          {selectedSession?.messages.length ? (
-            <ImageHistory
-              assetUrls={assetUrls}
-              isGenerating={isGenerating}
-              messages={selectedSession.messages}
-              onDownload={(url, name) => void download(url, name)}
-              onRetry={retry}
-            />
+          {selectedSession?.messages.length || pendingMessage ? (
+            <Conversation>
+              <ConversationContent className='mx-auto w-full max-w-6xl space-y-6 p-2 md:p-4'>
+                <ImageHistory
+                  assetUrls={assetUrls}
+                  isGenerating={isGenerating}
+                  messages={selectedSession?.messages ?? []}
+                  pendingMessage={pendingMessage}
+                  onDownload={(url, name) => void download(url, name)}
+                  onRetry={retry}
+                />
+              </ConversationContent>
+              <ConversationScrollButton />
+            </Conversation>
           ) : (
-            <EmptyState
-              className='min-h-32'
-              description={t(
-                'Describe an image or upload a reference to begin.'
-              )}
-              icon={Sparkles}
-              title={t('Start a new image')}
-            />
+            <div className='flex min-h-0 flex-1 items-center justify-center'>
+              <EmptyState
+                className='min-h-32'
+                description={t(
+                  'Describe an image or upload a reference to begin.'
+                )}
+                icon={Sparkles}
+                title={t('Start a new image')}
+              />
+            </div>
           )}
           <GenerationPanel
             groups={groups}
             inputPreview={inputPreview}
             isGenerating={isGenerating}
             isOptionsLoading={modelsQuery.isLoading || groupsQuery.isLoading}
-            isSessionReady={Boolean(selectedSession)}
+            isSessionReady={
+              Boolean(selectedSession) &&
+              !isRestoringAttachments &&
+              !isSavingAttachment
+            }
             maskPreview={maskPreview}
-            mode={mode}
             models={models}
             onGenerate={() => void handleGenerate()}
             onInputImageChange={(file) => setUploadedFile(file, 'input')}
             onMaskChange={(file) => setUploadedFile(file, 'mask')}
-            onModeChange={setMode}
             onParamChange={updateParams}
             onRemoveInput={() => removeUploadedFile('input')}
             onRemoveMask={() => removeUploadedFile('mask')}

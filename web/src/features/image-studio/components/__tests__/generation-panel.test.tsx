@@ -28,21 +28,22 @@ const params: ImageStudioParams = {
 }
 
 describe('image studio generation panel', () => {
-  test('switching to edit mode exposes reference and PNG mask uploads', () => {
-    const onModeChange = vi.fn()
-    const { rerender } = render(
+  test('reference upload is always available and reveals mask upload after a reference is selected', () => {
+    const onInputImageChange = vi.fn()
+    const reference = new File(['image'], 'reference.png', {
+      type: 'image/png',
+    })
+    const { container, rerender } = render(
       <GenerationPanel
         groups={[]}
         inputPreview=''
         isGenerating={false}
         isOptionsLoading={false}
         maskPreview=''
-        mode='generate'
         models={[]}
         onGenerate={vi.fn()}
-        onInputImageChange={vi.fn()}
+        onInputImageChange={onInputImageChange}
         onMaskChange={vi.fn()}
-        onModeChange={onModeChange}
         onParamChange={vi.fn()}
         onRemoveInput={vi.fn()}
         onRemoveMask={vi.fn()}
@@ -50,42 +51,72 @@ describe('image studio generation panel', () => {
       />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: 'Image to image' }))
+    expect(screen.queryByRole('button', { name: 'Text to image' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Image to image' })).toBeNull()
     expect(
-      screen.getByRole('button', { name: 'Image to image' })
-    ).toHaveAttribute('aria-pressed', 'false')
-    rerender(
-      <GenerationPanel
-        groups={[]}
-        inputPreview=''
-        isGenerating={false}
-        isOptionsLoading={false}
-        maskPreview=''
-        mode='edit'
-        models={[]}
-        onGenerate={vi.fn()}
-        onInputImageChange={vi.fn()}
-        onMaskChange={vi.fn()}
-        onModeChange={onModeChange}
-        onParamChange={vi.fn()}
-        onRemoveInput={vi.fn()}
-        onRemoveMask={vi.fn()}
-        params={params}
-      />
-    )
-    expect(
-      screen.getByRole('button', { name: 'Image to image' })
-    ).toHaveAttribute('aria-pressed', 'true')
-
-    expect(onModeChange).toHaveBeenCalledWith('edit')
-    expect(screen.getByLabelText('Upload reference image')).toHaveAttribute(
+      screen.getByRole('button', { name: 'Upload reference image' })
+    ).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Upload mask' })).toBeNull()
+    const referenceInput =
+      container.querySelector<HTMLInputElement>('input[type="file"]')
+    if (!referenceInput) {
+      throw new Error('Reference image input was not rendered')
+    }
+    expect(referenceInput).toHaveAttribute(
       'accept',
       'image/png,image/jpeg,image/webp'
     )
-    expect(screen.getByLabelText('Upload mask')).toHaveAttribute(
-      'accept',
-      'image/png'
+    fireEvent.change(referenceInput, {
+      target: { files: [reference] },
+    })
+    expect(onInputImageChange).toHaveBeenCalledWith(reference)
+
+    rerender(
+      <GenerationPanel
+        groups={[]}
+        inputPreview='blob:reference'
+        isGenerating={false}
+        isOptionsLoading={false}
+        maskPreview=''
+        models={[]}
+        onGenerate={vi.fn()}
+        onInputImageChange={onInputImageChange}
+        onMaskChange={vi.fn()}
+        onParamChange={vi.fn()}
+        onRemoveInput={vi.fn()}
+        onRemoveMask={vi.fn()}
+        params={params}
+      />
     )
+    expect(screen.getByRole('button', { name: 'Upload mask' })).toBeVisible()
+    const fileInputs =
+      container.querySelectorAll<HTMLInputElement>('input[type="file"]')
+    expect(fileInputs).toHaveLength(2)
+    expect(fileInputs[1]).toHaveAttribute('accept', 'image/png')
+  })
+
+  test('text-to-image generation does not require a mode selection or upload', () => {
+    const onGenerate = vi.fn()
+    render(
+      <GenerationPanel
+        groups={[]}
+        inputPreview=''
+        isGenerating={false}
+        isOptionsLoading={false}
+        maskPreview=''
+        models={[{ label: 'gpt-image-1', value: 'gpt-image-1' }]}
+        onGenerate={onGenerate}
+        onInputImageChange={vi.fn()}
+        onMaskChange={vi.fn()}
+        onParamChange={vi.fn()}
+        onRemoveInput={vi.fn()}
+        onRemoveMask={vi.fn()}
+        params={params}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Generate' }))
+    expect(onGenerate).toHaveBeenCalledOnce()
   })
 
   test('generation stays disabled when GPT Image models are unavailable', () => {
@@ -96,12 +127,10 @@ describe('image studio generation panel', () => {
         isGenerating={false}
         isOptionsLoading={false}
         maskPreview=''
-        mode='generate'
         models={[]}
         onGenerate={vi.fn()}
         onInputImageChange={vi.fn()}
         onMaskChange={vi.fn()}
-        onModeChange={vi.fn()}
         onParamChange={vi.fn()}
         onRemoveInput={vi.fn()}
         onRemoveMask={vi.fn()}
@@ -123,12 +152,10 @@ describe('image studio generation panel', () => {
         isGenerating={false}
         isOptionsLoading
         maskPreview=''
-        mode='generate'
         models={[{ label: 'gpt-image-1', value: 'gpt-image-1' }]}
         onGenerate={vi.fn()}
         onInputImageChange={vi.fn()}
         onMaskChange={vi.fn()}
-        onModeChange={vi.fn()}
         onParamChange={vi.fn()}
         onRemoveInput={vi.fn()}
         onRemoveMask={vi.fn()}
@@ -148,12 +175,10 @@ describe('image studio generation panel', () => {
         isGenerating={false}
         isOptionsLoading={false}
         maskPreview=''
-        mode='generate'
         models={[{ label: 'gpt-image-1', value: 'gpt-image-1' }]}
         onGenerate={vi.fn()}
         onInputImageChange={vi.fn()}
         onMaskChange={vi.fn()}
-        onModeChange={vi.fn()}
         onParamChange={onParamChange}
         onRemoveInput={vi.fn()}
         onRemoveMask={vi.fn()}
@@ -201,12 +226,10 @@ describe('image studio generation panel', () => {
         isOptionsLoading={false}
         isSessionReady={false}
         maskPreview=''
-        mode='generate'
         models={[{ label: 'gpt-image-1', value: 'gpt-image-1' }]}
         onGenerate={vi.fn()}
         onInputImageChange={vi.fn()}
         onMaskChange={vi.fn()}
-        onModeChange={vi.fn()}
         onParamChange={vi.fn()}
         onRemoveInput={vi.fn()}
         onRemoveMask={vi.fn()}

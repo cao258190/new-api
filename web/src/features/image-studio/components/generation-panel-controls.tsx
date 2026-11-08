@@ -7,6 +7,7 @@ the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 */
 import { Upload, X } from 'lucide-react'
+import { useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -37,40 +38,55 @@ type ImageUploadProps = {
   onRemove: () => void
 }
 
-/** Render an uploaded image preview or its accessible file picker. */
+/** Render an accessible image picker with its optional local preview. */
 export function ImageUpload(props: ImageUploadProps) {
   const { t } = useTranslation()
-  return props.preview ? (
-    <div className='relative'>
-      <img
-        alt={props.previewAlt}
-        className='size-20 rounded-md object-cover'
-        src={props.preview}
-      />
-      <Button
-        aria-label={props.removeLabel}
-        className='absolute -top-2 -right-2'
-        onClick={props.onRemove}
-        size='icon-sm'
-        variant='secondary'
-      >
-        <X />
-      </Button>
-    </div>
-  ) : (
-    <label className='cursor-pointer'>
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  return (
+    <div className='flex items-center gap-2'>
       <input
-        aria-label={props.label}
+        ref={inputRef}
+        aria-hidden='true'
         accept={props.accept}
         className='sr-only'
-        onChange={(event) => props.onChange(event.target.files?.[0])}
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0]
+          event.currentTarget.value = ''
+          props.onChange(file)
+        }}
+        tabIndex={-1}
         type='file'
       />
-      <span className='border-input hover:bg-accent inline-flex h-8 items-center gap-2 rounded-lg border px-3 text-sm'>
-        <Upload className='size-4' />
-        {props.label || t('Upload image')}
-      </span>
-    </label>
+      <Button
+        aria-label={props.label || t('Upload image')}
+        onClick={() => inputRef.current?.click()}
+        size='icon'
+        type='button'
+        variant='outline'
+      >
+        <Upload />
+      </Button>
+      {props.preview && (
+        <div className='relative'>
+          <img
+            alt={props.previewAlt}
+            className='size-10 rounded-md object-cover'
+            src={props.preview}
+          />
+          <Button
+            aria-label={props.removeLabel}
+            className='absolute -top-2 -right-2'
+            onClick={props.onRemove}
+            size='icon-sm'
+            type='button'
+            variant='secondary'
+          >
+            <X />
+          </Button>
+        </div>
+      )}
+    </div>
   )
 }
 
