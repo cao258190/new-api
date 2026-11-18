@@ -516,13 +516,24 @@ func executeTaskSubmissionWith(
 	var result *relay.TaskSubmitResult
 	var taskErr *taskdto.TaskError
 	durable := false
+	upstreamAccepted := false
 	stage := "start"
 	defer func() {
 		// The client of a relayed event stream already holds the vendor's
 		// work, so the submission is billed instead of refunded.
-		if !durable && relayInfo.Billing != nil && !c.Writer.Written() {
-			diagnostics.refund(stage)
-			relayInfo.Billing.Refund(c)
+		if !durable {
+			if relayInfo.Billing != nil && !c.Writer.Written() {
+				diagnostics.refund(stage)
+				relayInfo.Billing.Refund(c)
+			}
+			if reservation := relayInfo.ImageStudioQuotaReservation; reservation != nil {
+				if !upstreamAccepted || (result != nil && result.Immediate != nil && result.Immediate.Status == model.TaskStatusFailure) {
+					service.ReleaseImageStudioFreeImages(reservation)
+				} else {
+					service.SettleImageStudioFreeImages(reservation, reservation.Images)
+				}
+				relayInfo.ImageStudioQuotaReservation = nil
+			}
 		}
 	}()
 	stage = "before_attempt"
@@ -583,6 +594,9 @@ func executeTaskSubmissionWith(
 
 		stage = "submit"
 		result, taskErr = submit(c, relayInfo)
+		if (taskErr == nil && result != nil) || (taskErr != nil && taskErr.NoRetry) {
+			upstreamAccepted = true
+		}
 		if requestErr := c.Request.Context().Err(); requestErr != nil {
 			diagnostics.cancelled("after_submit", retryParam.GetRetry()+1)
 			taskErr = service.TaskErrorWrapperLocal(requestErr, "request_cancelled", http.StatusRequestTimeout)
@@ -671,8 +685,10 @@ func executeTaskSubmissionWith(
 		OtherRatios:     relayInfo.PriceData.OtherRatios(),
 		OriginModelName: relayInfo.OriginModelName,
 		PerCallBilling:  common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName) || relayInfo.PriceData.UsePrice,
+		ImageStudioFree: relayInfo.IsImageStudioFree,
 		TieredSnapshot:  relayInfo.TieredBillingSnapshot,
 	}
+	task.PrivateData.ImageStudioQuotaReservation = relayInfo.ImageStudioQuotaReservation
 	task.Quota = result.Quota
 	task.Data = result.TaskData
 	if len(result.PluginState) > 0 {
@@ -747,6 +763,13 @@ func executeTaskSubmissionWith(
 		taskErr = service.TaskErrorWrapperLocal(errors.New("failed to settle task billing"), "task_billing_settlement_failed", http.StatusInternalServerError)
 		diagnostics.failed("settle", "billing_error", taskErr, true)
 		return nil, taskErr
+	}
+	if relayInfo.ImageStudioQuotaReservation != nil && (task.Status == model.TaskStatusSuccess || task.Status == model.TaskStatusFailure) {
+		var imageCount int
+		if result.Immediate != nil {
+			imageCount = service.ImageStudioImageCountFromUsageFacts(result.Immediate.UsageFacts)
+		}
+		service.FinalizeImageStudioTaskQuota(task, imageCount)
 	}
 	perfmetrics.RecordImmediateTaskResult(relayInfo, result.Immediate)
 	if task.Status != model.TaskStatusFailure {

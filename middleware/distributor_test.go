@@ -270,6 +270,26 @@ func TestPlaygroundImageRequestDefaultsToAuthenticatedUserGroup(t *testing.T) {
 	assert.JSONEq(t, `{"group":"vip","query":""}`, recorder.Body.String())
 }
 
+func TestPlaygroundImageRequestAlwaysAllowsFreeImageGroup(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+		c.Next()
+	})
+	router.POST("/pg/images/generations", PlaygroundImageRequest(), func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"group": common.GetContextKeyString(c, constant.ContextKeyUsingGroup)})
+	})
+	request := httptest.NewRequest(http.MethodPost, "/pg/images/generations?group="+service.ImageStudioFreeImageGroup, strings.NewReader(`{"model":"gpt-image-1"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	assert.JSONEq(t, `{"group":"`+service.ImageStudioFreeImageGroup+`"}`, recorder.Body.String())
+}
+
 func TestPlaygroundImageRequestAppliesAuthenticatedGroupRestrictions(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	require.NoError(t, i18n.Init())

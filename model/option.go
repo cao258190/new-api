@@ -54,6 +54,7 @@ func InitOptionMap() {
 	common.OptionMap["DisplayInCurrencyEnabled"] = strconv.FormatBool(common.DisplayInCurrencyEnabled)
 	common.OptionMap["DisplayTokenStatEnabled"] = strconv.FormatBool(common.DisplayTokenStatEnabled)
 	common.OptionMap["DrawingEnabled"] = strconv.FormatBool(common.DrawingEnabled)
+	common.OptionMap["image_studio.daily_free_image_limit"] = strconv.Itoa(150)
 	common.OptionMap["TaskEnabled"] = strconv.FormatBool(common.TaskEnabled)
 	common.OptionMap["TaskPluginEnabled"] = strconv.FormatBool(constant.TaskPluginEnabled)
 	jsplugin.DefaultRegistry.SetEnabled(constant.TaskPluginEnabled)
@@ -235,6 +236,12 @@ func SyncOptions(frequency int) {
 func validateOptionValue(key string, value string) error {
 	if key == legacyAccessTokenRetireAtKey {
 		return errLegacyRetireAtReadOnly
+	}
+	if key == "image_studio.daily_free_image_limit" {
+		limit, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || limit < 0 || limit > 1000000 {
+			return common.NewMessage("Image Studio daily free image limit must be between 0 and 1000000")
+		}
 	}
 	if err := operation_setting.ValidateQuotaOption(key, value); err != nil {
 		return err

@@ -1,7 +1,6 @@
 package ratio_setting
 
 import (
-	"encoding/json"
 	"errors"
 
 	"github.com/QuantumNous/new-api/common"
@@ -10,9 +9,10 @@ import (
 )
 
 var defaultGroupRatio = map[string]float64{
-	"default": 1,
-	"vip":     1,
-	"svip":    1,
+	"default":    1,
+	"vip":        1,
+	"svip":       1,
+	"free-image": 1,
 }
 
 var groupRatioMap = types.NewRWMap[string, float64]()
@@ -73,7 +73,19 @@ func GroupRatio2JSONString() string {
 }
 
 func UpdateGroupRatioByJSONString(jsonStr string) error {
-	return types.LoadFromJsonString(groupRatioMap, jsonStr)
+	var ratios map[string]float64
+	if err := common.Unmarshal([]byte(jsonStr), &ratios); err != nil {
+		return err
+	}
+	if ratios == nil {
+		ratios = make(map[string]float64)
+	}
+	ratios["free-image"] = 1
+	encoded, err := common.Marshal(ratios)
+	if err != nil {
+		return err
+	}
+	return types.LoadFromJsonString(groupRatioMap, string(encoded))
 }
 
 func GetGroupRatio(name string) float64 {
@@ -107,7 +119,7 @@ func UpdateGroupGroupRatioByJSONString(jsonStr string) error {
 
 func CheckGroupRatio(jsonStr string) error {
 	checkGroupRatio := make(map[string]float64)
-	err := json.Unmarshal([]byte(jsonStr), &checkGroupRatio)
+	err := common.Unmarshal([]byte(jsonStr), &checkGroupRatio)
 	if err != nil {
 		return err
 	}

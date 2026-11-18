@@ -1,6 +1,7 @@
 package service
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -38,12 +39,42 @@ func GetUserUsableGroups(userGroup string) map[string]string {
 			groupsCopy[userGroup] = "User group"
 		}
 	}
+	groupsCopy[ImageStudioFreeImageGroup] = "Image Studio free quota"
 	return groupsCopy
 }
 
 func GroupInUserUsableGroups(userGroup, groupName string) bool {
 	_, ok := GetUserUsableGroups(userGroup)[groupName]
 	return ok
+}
+
+// GetImageStudioRouteGroups returns the Image Studio group followed by the
+// authenticated user's selectable routing groups. A channel explicitly
+// configured for the Image Studio group therefore takes precedence.
+func GetImageStudioRouteGroups(userGroup string) []string {
+	usableGroups := GetUserUsableGroups(userGroup)
+	groups := []string{ImageStudioFreeImageGroup}
+	if userGroup != "" && userGroup != "auto" && userGroup != ImageStudioFreeImageGroup {
+		if _, ok := usableGroups[userGroup]; ok {
+			groups = append(groups, userGroup)
+		}
+	}
+
+	otherGroups := make([]string, 0, len(usableGroups))
+	for group := range usableGroups {
+		if group == "" || group == "auto" || group == ImageStudioFreeImageGroup || group == userGroup {
+			continue
+		}
+		otherGroups = append(otherGroups, group)
+	}
+	slices.Sort(otherGroups)
+	return append(groups, otherGroups...)
+}
+
+func IsImageStudioFreeImageRequest(c *gin.Context, group string) bool {
+	return c != nil && group == ImageStudioFreeImageGroup &&
+		common.GetContextKeyBool(c, constant.ContextKeyIsPlayground) &&
+		common.GetContextKeyString(c, constant.ContextKeyUsingGroup) == ImageStudioFreeImageGroup
 }
 
 func IsUserSelectableGroup(userGroup, groupName string) bool {

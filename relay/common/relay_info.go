@@ -92,13 +92,15 @@ type RelayInfo struct {
 	FirstResponseTime time.Time
 	isFirstResponse   bool
 	//SendLastReasoningResponse bool
-	IsStream               bool
-	IsGeminiBatchEmbedding bool
-	IsPlayground           bool
-	UsePrice               bool
-	RelayMode              int
-	OriginModelName        string
-	ResponseModel          *ResponseModel
+	IsStream                    bool
+	IsGeminiBatchEmbedding      bool
+	IsPlayground                bool
+	IsImageStudioFree           bool
+	ImageStudioQuotaReservation *ImageStudioQuotaReservation
+	UsePrice                    bool
+	RelayMode                   int
+	OriginModelName             string
+	ResponseModel               *ResponseModel
 
 	// BillingModelName is the pricing identity for this request. It is kept
 	// separate from OriginModelName and UpstreamModelName so virtual pricing
@@ -235,6 +237,13 @@ type RelayInfo struct {
 	*ResponsesUsageInfo
 	*ChannelMeta
 	*TaskRelayInfo
+}
+
+type ImageStudioQuotaReservation struct {
+	Day        string
+	Generation string
+	ID         string
+	Images     int
 }
 
 // UpdateImageCount replaces the billable quantity without changing the frozen

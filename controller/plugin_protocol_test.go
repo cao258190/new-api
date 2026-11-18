@@ -1789,6 +1789,38 @@ func TestServeTaskPluginImageProtocolSubmissionErrorUsesOpenAIEnvelope(t *testin
 	assert.NotContains(t, errorBody["message"], "request_id")
 }
 
+func TestServeTaskPluginImageProtocolRejectsInvalidImageCount(t *testing.T) {
+	for _, invalidCount := range []float64{-1, 1e300, 1.5} {
+		t.Run(fmt.Sprintf("n=%v", invalidCount), func(t *testing.T) {
+			pinned := imageProtocolTestEndpoint(t)
+			c, recorder := newImageProtocolTestContext("")
+			common.SetContextKey(c, constant.ContextKeyUsingGroup, service.ImageStudioFreeImageGroup)
+			common.SetContextKey(c, constant.ContextKeyIsPlayground, true)
+			requestValue, ok := c.Get(pluginruntime.ContextKeyProtocolRequest)
+			require.True(t, ok)
+			protocolRequest := requestValue.(pluginruntime.ProtocolRequestContext)
+			body := protocolRequest.Body.(map[string]any)
+			jsonBody := body["value"].(map[string]any)
+			jsonBody["n"] = invalidCount
+			var submitted bool
+			deps := pluginProtocolTestDeps()
+			deps.submit = func(*gin.Context, *relaycommon.RelayInfo) (*taskSubmissionOutcome, *dto.TaskError) {
+				submitted = true
+				return nil, nil
+			}
+
+			serveTaskPluginImageProtocol(c, pinned, deps)
+
+			assert.False(t, submitted)
+			assert.Equal(t, http.StatusBadRequest, recorder.Code)
+			var response map[string]any
+			require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+			errorBody := response["error"].(map[string]any)
+			assert.Equal(t, "invalid_image_count", errorBody["code"])
+		})
+	}
+}
+
 // A synchronous image submission is billable the moment DashScope accepts it.
 // A client that disconnects while the upstream call is in flight must not
 // cancel that call or refund a durable result: the task row, its settlement

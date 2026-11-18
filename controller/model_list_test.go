@@ -215,6 +215,43 @@ func TestGetUserModelsFiltersByRequestedGroup(t *testing.T) {
 	require.Empty(t, decodeUserModelsResponse(t, vipRecorder))
 }
 
+func TestGetUserModelsForImageStudioFreeGroupUsesAuthorizedRouteGroups(t *testing.T) {
+	originalUsableGroups := setting.UserUsableGroups2JSONString()
+	originalGroupRatios := ratio_setting.GroupRatio2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(originalUsableGroups))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalGroupRatios))
+	})
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default","vip":"VIP"}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"vip":2,"hidden":3}`))
+
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.Create(&model.User{
+		Id:       1004,
+		Username: "image-studio-route-model-user",
+		Password: "password",
+		Group:    "default",
+		Status:   common.UserStatusEnabled,
+	}).Error)
+	require.NoError(t, db.Create(&[]model.Ability{
+		{Group: "free-image", Model: "gpt-image-dedicated", ChannelId: 1, Enabled: true},
+		{Group: "free-image", Model: "text-free-image", ChannelId: 1, Enabled: true},
+		{Group: "default", Model: "gpt-image-default", ChannelId: 2, Enabled: true},
+		{Group: "default", Model: "gpt-image", ChannelId: 2, Enabled: true},
+		{Group: "vip", Model: "gpt-image-vip", ChannelId: 3, Enabled: true},
+		{Group: "hidden", Model: "gpt-image-hidden", ChannelId: 4, Enabled: true},
+	}).Error)
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodGet, "/api/user/models?group=free-image", nil)
+	context.Set("id", 1004)
+
+	GetUserModels(context)
+
+	assert.ElementsMatch(t, []string{"gpt-image-dedicated", "gpt-image-default", "gpt-image", "gpt-image-vip"}, decodeUserModelsResponse(t, recorder))
+}
+
 func TestGetUserModelsExpandsAutoGroupsInConfiguredOrder(t *testing.T) {
 	originalAutoGroups := setting.AutoGroups2JsonString()
 	originalUsableGroups := setting.UserUsableGroups2JSONString()

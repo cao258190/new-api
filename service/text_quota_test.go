@@ -1721,3 +1721,42 @@ func TestPostTextConsumeQuotaLogsMissingUsageAsStructuredContent(t *testing.T) {
 		map[string]any{"key": "Upstream returned no usage, so nothing was charged (possibly an upstream timeout)"},
 	}, other["content_parts"])
 }
+
+func TestPostTextConsumeQuotaKeepsImageStudioFreeTieredRequestAtZero(t *testing.T) {
+	truncate(t)
+	const userID, channelID = 63, 63
+	seedUser(t, userID, 10_000)
+	seedChannel(t, channelID)
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest("POST", "/v1/images/generations", nil)
+	expression := `tier("paid_image", fixed(0.04)) * image_count`
+	info := &relaycommon.RelayInfo{
+		UserId:            userID,
+		OriginModelName:   "free-image-test",
+		UsingGroup:        ImageStudioFreeImageGroup,
+		StartTime:         time.Now(),
+		ChannelMeta:       &relaycommon.ChannelMeta{ChannelId: channelID},
+		PriceData:         hosttypes.PriceData{ModelRatio: 1, CompletionRatio: 1, GroupRatioInfo: hosttypes.GroupRatioInfo{GroupRatio: 1}},
+		IsImageStudioFree: true,
+		TieredBillingSnapshot: &billingexpr.BillingSnapshot{
+			BillingMode:         "tiered_expr",
+			ExprString:          expression,
+			ExprHash:            billingexpr.ExprHashString(expression),
+			GroupRatio:          1,
+			QuotaPerUnit:        common.QuotaPerUnit,
+			EstimatedImageCount: common.GetPointer(2),
+		},
+		BillingImageCount: common.GetPointer(2),
+	}
+
+	PostTextConsumeQuota(ctx, info, &dto.Usage{PromptTokens: 100, CompletionTokens: 20, TotalTokens: 120}, nil)
+
+	remaining, err := model.GetUserQuota(userID, true)
+	require.NoError(t, err)
+	assert.Equal(t, 10_000, remaining)
+	log := getLastLog(t)
+	require.NotNil(t, log)
+	assert.Zero(t, log.Quota)
+	assert.Equal(t, ImageStudioFreeImageGroup, log.Group)
+}

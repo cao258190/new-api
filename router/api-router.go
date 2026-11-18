@@ -173,6 +173,13 @@ func SetApiRouter(router *gin.Engine) {
 				adminRoute.DELETE("/:id/2fa", controller.AdminDisable2FA)
 			}
 		}
+		imageStudioAdminRoute := apiRouter.Group("/image-studio/admin")
+		imageStudioAdminRoute.Use(middleware.AdminAuth(), middleware.DisableCache())
+		{
+			imageStudioAdminRoute.GET("/quota", controller.AdminGetImageStudioQuota)
+			imageStudioAdminRoute.PUT("/quota", controller.AdminUpdateImageStudioQuota)
+			imageStudioAdminRoute.POST("/quota/reset", controller.AdminResetImageStudioQuota)
+		}
 
 		// Subscription billing (plans, purchase, admin management)
 		subscriptionRoute := apiRouter.Group("/subscription")
