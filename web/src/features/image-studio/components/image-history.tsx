@@ -15,6 +15,7 @@ import { Message, MessageContent } from '@/components/ai-elements/message'
 import { Shimmer } from '@/components/ai-elements/shimmer'
 import { Dialog } from '@/components/dialog'
 import { Button } from '@/components/ui/button'
+import { translateServerText } from '@/lib/server-error-message'
 
 import type { ImageStudioMessage } from '../types'
 
@@ -75,7 +76,12 @@ export function ImageHistory(props: ImageHistoryProps) {
             <div className='w-full min-w-0 space-y-3'>
               {message.status === 'error' ? (
                 <div className='flex flex-wrap items-center justify-between gap-3'>
-                  <p className='text-destructive text-sm'>{message.error}</p>
+                  <p className='text-destructive text-sm'>
+                    {translateServerText(
+                      t,
+                      message.error ?? 'Generation failed'
+                    )}
+                  </p>
                   <Button
                     disabled={props.isGenerating}
                     onClick={() => props.onRetry(message)}

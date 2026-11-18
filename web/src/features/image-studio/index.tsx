@@ -20,6 +20,10 @@ import {
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { EmptyState } from '@/components/empty-state'
 import { handleServerError } from '@/lib/handle-server-error'
+import {
+  getServerErrorMessage,
+  translateServerText,
+} from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { getImageGroups, getImageModels, requestImages } from './api'
@@ -786,6 +790,7 @@ export function ImageStudio() {
       setPendingMessage(undefined)
       await persistSession(updated)
     } catch (error) {
+      const errorMessage = getServerErrorMessage(error, 'Generation failed')
       const updated: ImageStudioSession = {
         ...startedSession,
         updatedAt: Date.now(),
@@ -800,8 +805,7 @@ export function ImageStudio() {
           {
             ...baseMessage,
             status: 'error',
-            error:
-              error instanceof Error ? error.message : t('Generation failed'),
+            error: errorMessage,
           },
         ],
       }
@@ -810,7 +814,9 @@ export function ImageStudio() {
       )
       setPendingMessage(undefined)
       await persistSession(updated)
-      handleServerError(error, t('Generation failed'))
+      handleServerError(error, t('Generation failed'), {
+        title: translateServerText(t, errorMessage),
+      })
     } finally {
       setPendingMessage(undefined)
       setIsGenerating(false)

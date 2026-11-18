@@ -15,8 +15,11 @@ import {
   within,
 } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import i18next from 'i18next'
+import { toast } from 'sonner'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import zh from '@/i18n/locales/zh.json'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { getImageGroups, getImageModels, requestImages } from '../api'
@@ -148,11 +151,41 @@ describe('image studio retry', () => {
     vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     cleanup()
     client.clear()
     useAuthStore.setState(useAuthStore.getInitialState(), true)
     vi.restoreAllMocks()
+    await i18next.changeLanguage('en')
+    i18next.removeResourceBundle('zhCN', 'translation')
+  })
+
+  it('shows a quota rejection in Chinese while keeping the original error in local history', async () => {
+    const original =
+      'Daily free image quota is insufficient (request id: studio-quota-test)'
+    const translated = '今日免费生图额度不足 (请求 ID: studio-quota-test)'
+    const notify = vi.spyOn(toast, 'error').mockReturnValue('quota-error')
+    vi.mocked(requestImages)
+      .mockReset()
+      .mockRejectedValueOnce(new Error(original))
+    i18next.addResourceBundle('zhCN', 'translation', zh.translation, true, true)
+    await i18next.changeLanguage('zhCN')
+    const user = userEvent.setup()
+    render(
+      <QueryClientProvider client={client}>
+        <ImageStudio />
+      </QueryClientProvider>
+    )
+
+    await user.click(
+      await screen.findByRole('button', { name: i18next.t('Generate') })
+    )
+
+    expect(await screen.findByText(translated)).toBeVisible()
+    expect(notify).toHaveBeenCalledWith(translated)
+    expect(
+      vi.mocked(saveImageSession).mock.calls.at(-1)?.[1].messages.at(-1)?.error
+    ).toBe(original)
   })
 
   it('keeps the current draft image for a new edit after retrying a historical message', async () => {

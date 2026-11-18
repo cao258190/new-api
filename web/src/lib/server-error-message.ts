@@ -175,11 +175,18 @@ export function getServerMessage(value: unknown): string | undefined {
  * params (task fail reasons, built-in group descriptions). The same fields also
  * carry upstream errors and administrator text; those have no locale entry and
  * are shown exactly as written, so interpolation and nesting stay off.
+ * Gateway request IDs are preserved when translating the message before them.
  */
 export function translateServerText(
   t: (key: string, options?: Record<string, unknown>) => string,
   text: string
 ): string {
+  const requestId = /^(.*) \(request id: ([^()\r\n]+)\)$/s.exec(text)
+  if (requestId) {
+    const translated = t(requestId[1], { skipInterpolation: true })
+    if (translated === requestId[1]) return text
+    return `${translated} (${t('Request ID')}: ${requestId[2]})`
+  }
   return t(text, { skipInterpolation: true })
 }
 
