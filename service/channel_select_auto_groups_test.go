@@ -127,3 +127,113 @@ func TestCacheGetRandomSatisfiedChannelUsesTokenAutoGroupsWhenGlobalAutoIsEmpty(
 	assert.Equal(t, "default", selectedGroup)
 	assert.Equal(t, "default", common.GetContextKeyString(ctx, constant.ContextKeyAutoGroup))
 }
+
+func TestCacheGetRandomSatisfiedChannelForImageStudioFreeGroup(t *testing.T) {
+	const modelName = "image-studio-free-route-model"
+
+	t.Run("explicit image studio channel takes precedence", func(t *testing.T) {
+		db := setupChannelSelectAutoGroupsTest(t)
+		createChannelSelectAutoGroupsChannel(t, db, 2201, ImageStudioFreeImageGroup, modelName)
+		createChannelSelectAutoGroupsChannel(t, db, 2202, "default", modelName)
+		model.InitChannelCache()
+
+		gin.SetMode(gin.TestMode)
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+		common.SetContextKey(ctx, constant.ContextKeyUsingGroup, ImageStudioFreeImageGroup)
+		common.SetContextKey(ctx, constant.ContextKeyIsPlayground, true)
+
+		channel, selectedGroup, err := CacheGetRandomSatisfiedChannel(&RetryParam{
+			Ctx:        ctx,
+			TokenGroup: ImageStudioFreeImageGroup,
+			ModelName:  modelName,
+		})
+		require.NoError(t, err)
+		require.NotNil(t, channel)
+		assert.Equal(t, 2201, channel.Id)
+		assert.Equal(t, ImageStudioFreeImageGroup, selectedGroup)
+		assert.Equal(t, ImageStudioFreeImageGroup, common.GetContextKeyString(ctx, constant.ContextKeyUsingGroup))
+		_, autoGroupSet := common.GetContextKey(ctx, constant.ContextKeyAutoGroup)
+		assert.False(t, autoGroupSet)
+	})
+
+	t.Run("falls back to an authorized user group", func(t *testing.T) {
+		db := setupChannelSelectAutoGroupsTest(t)
+		createChannelSelectAutoGroupsChannel(t, db, 2203, "vip", modelName)
+		createChannelSelectAutoGroupsChannel(t, db, 2205, "hidden", modelName)
+		model.InitChannelCache()
+
+		gin.SetMode(gin.TestMode)
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+		common.SetContextKey(ctx, constant.ContextKeyUsingGroup, ImageStudioFreeImageGroup)
+		common.SetContextKey(ctx, constant.ContextKeyIsPlayground, true)
+
+		channel, selectedGroup, err := CacheGetRandomSatisfiedChannel(&RetryParam{
+			Ctx:        ctx,
+			TokenGroup: ImageStudioFreeImageGroup,
+			ModelName:  modelName,
+		})
+		require.NoError(t, err)
+		require.NotNil(t, channel)
+		assert.Equal(t, 2203, channel.Id)
+		assert.Equal(t, ImageStudioFreeImageGroup, selectedGroup)
+		assert.Equal(t, ImageStudioFreeImageGroup, common.GetContextKeyString(ctx, constant.ContextKeyUsingGroup))
+	})
+
+	t.Run("does not use ordinary group fallback outside the playground", func(t *testing.T) {
+		db := setupChannelSelectAutoGroupsTest(t)
+		createChannelSelectAutoGroupsChannel(t, db, 2204, "default", modelName)
+		model.InitChannelCache()
+
+		gin.SetMode(gin.TestMode)
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+		common.SetContextKey(ctx, constant.ContextKeyUsingGroup, ImageStudioFreeImageGroup)
+
+		channel, selectedGroup, err := CacheGetRandomSatisfiedChannel(&RetryParam{
+			Ctx:        ctx,
+			TokenGroup: ImageStudioFreeImageGroup,
+			ModelName:  modelName,
+		})
+		require.NoError(t, err)
+		assert.Nil(t, channel)
+		assert.Equal(t, ImageStudioFreeImageGroup, selectedGroup)
+	})
+}
+
+func TestSelectChannelForRequestKeepsImageStudioGroupForFallbackRoute(t *testing.T) {
+	db := setupChannelSelectAutoGroupsTest(t)
+	const modelName = "image-studio-select-channel-model"
+	createChannelSelectAutoGroupsChannel(t, db, 2206, "vip", modelName)
+	model.InitChannelCache()
+
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest("POST", "/v1/images/generations", nil)
+	common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(ctx, constant.ContextKeyUsingGroup, ImageStudioFreeImageGroup)
+	common.SetContextKey(ctx, constant.ContextKeyIsPlayground, true)
+
+	channel, selectedGroup, selectErr := SelectChannelForRequest(ctx, modelName, &RetryParam{
+		Ctx:        ctx,
+		TokenGroup: ImageStudioFreeImageGroup,
+		ModelName:  modelName,
+		Retry:      common.GetPointer(0),
+	})
+
+	require.Nil(t, selectErr)
+	require.NotNil(t, channel)
+	assert.Equal(t, 2206, channel.Id)
+	assert.Equal(t, ImageStudioFreeImageGroup, selectedGroup)
+	assert.Equal(t, ImageStudioFreeImageGroup, common.GetContextKeyString(ctx, constant.ContextKeyUsingGroup))
+}
+
+func TestGetImageStudioRouteGroupsIncludesFreeGroupAndAuthorizedGroups(t *testing.T) {
+	setupChannelSelectAutoGroupsTest(t)
+
+	groups := GetImageStudioRouteGroups("default")
+
+	assert.Equal(t, []string{ImageStudioFreeImageGroup, "default", "vip"}, groups)
+	assert.True(t, GroupInUserUsableGroups("default", ImageStudioFreeImageGroup))
+}

@@ -307,7 +307,12 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"DELETE /api/deployments/:id":                       accessTokenScopeRule("deployment:write"),
 
 	// router/relay-router.go
-	"POST /pg/chat/completions": accessTokenSessionRule,
+	"POST /pg/chat/completions":                accessTokenSessionRule,
+	"POST /pg/images/edits":                    accessTokenSessionRule,
+	"POST /pg/images/generations":              accessTokenSessionRule,
+	"GET /api/image-studio/admin/quota":        accessTokenSessionRule,
+	"PUT /api/image-studio/admin/quota":        accessTokenSessionRule,
+	"POST /api/image-studio/admin/quota/reset": accessTokenSessionRule,
 }
 
 var (

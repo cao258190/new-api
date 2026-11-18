@@ -232,7 +232,6 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	if taskErr := adaptor.ValidateRequestAndSetAction(c, info); taskErr != nil {
 		return nil, taskErr
 	}
-
 	// 2. 确定模型名称
 	modelName := info.OriginModelName
 	if modelName == "" {
@@ -332,10 +331,36 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		info.PriceData.Quota = quota
 		noteTaskQuotaClamp(info, clamp)
 	}
+	if info.IsImageStudioFree && info.ImageStudioQuotaReservation != nil {
+		imageCount := service.ImageStudioImageCountFromUsageFacts(map[string]any{
+			"image_count": info.PriceData.OtherRatios()["image_count"],
+		})
+		if snapshot := info.TieredBillingSnapshot; snapshot != nil {
+			imageCount = service.ImageStudioImageCountFromUsageFacts(snapshot.UsageFacts)
+		}
+		if imageCount < 1 {
+			return nil, service.TaskErrorWrapperLocal(errors.New("free image task did not provide a valid image count"), "plugin_usage_invalid", http.StatusBadRequest)
+		}
+		if resizeErr := service.ResizeImageStudioFreeImageReservation(info.ImageStudioQuotaReservation, imageCount); resizeErr != nil {
+			statusCode := http.StatusServiceUnavailable
+			code := "image_studio_quota_unavailable"
+			message := "Image Studio free quota is temporarily unavailable"
+			if errors.Is(resizeErr, service.ErrImageStudioQuotaExceeded) {
+				statusCode = http.StatusTooManyRequests
+				code = "image_studio_quota_exceeded"
+				message = "Daily free image quota is insufficient"
+			}
+			return nil, service.TaskErrorWrapperLocal(errors.New(message), code, statusCode)
+		}
+	}
 
 	// 7. 预扣费：首次尝试创建计费会话；重试时会话已存在，换到更贵的渠道要在
 	//    发起上游请求前补足预扣，余额不足就不发请求。
-	if info.Billing != nil || !info.PriceData.FreeModel {
+	if info.IsImageStudioFree {
+		info.PriceData.Quota = 0
+		info.PriceData.QuotaToPreConsume = 0
+		info.PriceData.FreeModel = true
+	} else if info.Billing != nil || !info.PriceData.FreeModel {
 		info.ForcePreConsume = true
 		if apiErr := service.PreConsumeBilling(c, info.PriceData.Quota, info); apiErr != nil {
 			return nil, service.TaskErrorFromAPIError(apiErr)
@@ -363,15 +388,17 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		responseBody, _ := io.ReadAll(resp.Body)
 		return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode, common.UpstreamAddresses(c)...)
 	}
-
 	// 10. Parse only. The controller presents the response after the durable
 	// task barrier and billing settlement.
 	parsed, taskErr := adaptor.ParseResponse(c, resp, info)
 	if taskErr != nil {
+		taskErr.NoRetry = taskErr.NoRetry || info.IsImageStudioFree
 		return nil, taskErr
 	}
 	if parsed == nil {
-		return nil, service.TaskErrorWrapperLocal(errors.New("task adaptor returned an empty response"), "plugin_submit_response_invalid", http.StatusBadGateway)
+		taskErr = service.TaskErrorWrapperLocal(errors.New("task adaptor returned an empty response"), "plugin_submit_response_invalid", http.StatusBadGateway)
+		taskErr.NoRetry = info.IsImageStudioFree
+		return nil, taskErr
 	}
 
 	// 11. 提交后计费调整：让适配器根据上游实际返回调整 OtherRatios
@@ -402,6 +429,10 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	}
 
 	info.PriceData.Quota = finalQuota
+	if info.IsImageStudioFree {
+		finalQuota = 0
+		info.PriceData.Quota = 0
+	}
 
 	return &TaskSubmitResult{
 		UpstreamTaskID: parsed.UpstreamTaskID,

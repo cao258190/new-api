@@ -28,6 +28,7 @@ import type {
   SystemTaskResponse,
   UpdateOptionRequest,
   UpdateOptionResponse,
+  ImageStudioQuotaResponse,
   UpdatePasskeyDomainsRequest,
   UpdatePasskeyDomainsResponse,
   UpstreamChannelsResponse,
@@ -41,6 +42,28 @@ export async function getSystemOptions() {
 
 export async function updateSystemOption(request: UpdateOptionRequest) {
   const res = await api.put<UpdateOptionResponse>('/api/option/', request)
+  return res.data
+}
+
+export async function getImageStudioAdminQuota() {
+  const res = await api.get<ImageStudioQuotaResponse>(
+    '/api/image-studio/admin/quota'
+  )
+  return res.data
+}
+
+export async function updateImageStudioAdminQuota(dailyLimit: number) {
+  const res = await api.put<ImageStudioQuotaResponse>(
+    '/api/image-studio/admin/quota',
+    { daily_limit: dailyLimit }
+  )
+  return res.data
+}
+
+export async function resetImageStudioAdminQuota() {
+  const res = await api.post<ImageStudioQuotaResponse>(
+    '/api/image-studio/admin/quota/reset'
+  )
   return res.data
 }
 

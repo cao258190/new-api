@@ -51,6 +51,7 @@ function Fixture() {
               trust_quota_usd: 10,
               pre_consume_multiplier: 1,
             },
+            image_studio: { daily_free_image_limit: 150 },
           }}
         />
       </SettingsPageProvider>
@@ -78,6 +79,71 @@ async function renderSettings() {
 
 beforeEach(() => {
   vi.spyOn(api, 'put').mockResolvedValue({ data: { success: true } })
+  vi.spyOn(api, 'get').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        daily_limit: 150,
+        used: 37,
+        remaining: 113,
+        resets_at: '2026-11-19T00:00:00+08:00',
+      },
+    },
+  })
+  vi.spyOn(api, 'post').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        daily_limit: 150,
+        used: 0,
+        remaining: 150,
+        resets_at: '2026-11-19T00:00:00+08:00',
+      },
+    },
+  })
+})
+
+test('saving the daily free image limit updates the administrator quota', async () => {
+  await renderSettings()
+  const input = screen.getByRole('spinbutton', { name: 'Free images per day' })
+  expect(input).toHaveValue(150)
+  fireEvent.change(input, { target: { value: '220' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+
+  await waitFor(() =>
+    expect(api.put).toHaveBeenCalledWith('/api/image-studio/admin/quota', {
+      daily_limit: 220,
+    })
+  )
+})
+
+test('invalid daily free image limit prevents saving', async () => {
+  await renderSettings()
+  const input = screen.getByRole('spinbutton', { name: 'Free images per day' })
+  fireEvent.change(input, { target: { value: '1.5' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+
+  await waitFor(() => expect(input).toHaveAttribute('aria-invalid', 'true'))
+  expect(screen.getByText('Must be a whole number')).toBeInTheDocument()
+  expect(api.put).not.toHaveBeenCalled()
+})
+
+test('admin sees shared usage and can confirm a daily reset', async () => {
+  const user = userEvent.setup()
+  await renderSettings()
+  expect(await screen.findByText('Used today')).toBeInTheDocument()
+  expect(screen.getByText('37')).toBeInTheDocument()
+  expect(screen.getByText('113')).toBeInTheDocument()
+
+  await user.click(
+    screen.getByRole('button', { name: "Reset today's free image usage" })
+  )
+  await user.click(screen.getByRole('button', { name: 'Reset usage' }))
+
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith('/api/image-studio/admin/quota/reset')
+  )
+  await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('0'))
 })
 
 test.each(['0.5', '1.5', '2.5', '0.0001'])(

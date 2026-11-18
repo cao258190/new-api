@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/plugins"
@@ -88,6 +89,27 @@ func TestListModelsSupportsOpenAIAndGeminiAuthentication(t *testing.T) {
 			if test.expectedObject != "" {
 				assert.Equal(t, test.expectedObject, payload["object"])
 			}
+		})
+	}
+}
+
+func TestPlaygroundImageRoutesRequireDashboardAuthentication(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	SetRelayRouter(engine)
+
+	for _, path := range []string{"/pg/images/generations", "/pg/images/edits"} {
+		t.Run(path, func(t *testing.T) {
+			rule, ok := middleware.AccessTokenRouteRule("POST " + path)
+			require.True(t, ok)
+			assert.Equal(t, "session", rule.Kind())
+
+			request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"gpt-image-1","prompt":"a kite"}`))
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+			engine.ServeHTTP(recorder, request)
+
+			require.Equal(t, http.StatusUnauthorized, recorder.Code)
 		})
 	}
 }

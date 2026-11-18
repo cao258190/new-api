@@ -210,6 +210,18 @@ func TestGenRelayInfoKeepsOriginAndLeavesBillingUnset(t *testing.T) {
 	assert.Equal(t, model, info.GetBillingModelName())
 }
 
+func TestGenRelayInfoPreservesPlaygroundAfterImagePathRewrite(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest("POST", "/v1/images/generations", nil)
+	common.SetContextKey(ctx, constant.ContextKeyIsPlayground, true)
+
+	info, err := GenRelayInfo(ctx, types.RelayFormatOpenAIImage, &dto.ImageRequest{Model: "gpt-image-1"}, nil)
+	require.NoError(t, err)
+	assert.True(t, info.IsPlayground)
+	assert.Equal(t, "/v1/images/generations", info.RequestURLPath)
+}
+
 func TestInitChannelMetaRestoresRequestReasoningEffortForRetry(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())

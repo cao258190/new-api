@@ -638,15 +638,29 @@ func GetUserModels(c *gin.Context) {
 		if _, ok := groups[group]; ok {
 			groupsToQuery = service.GetUserAutoGroup(user.Group)
 		}
+	case group == service.ImageStudioFreeImageGroup:
+		if _, ok := groups[group]; ok {
+			groupsToQuery = service.GetImageStudioRouteGroups(user.Group)
+		}
 	default:
 		if _, ok := groups[group]; ok {
 			groupsToQuery = []string{group}
 		}
 	}
+	models := service.GetGroupsEnabledModels(groupsToQuery)
+	if group == service.ImageStudioFreeImageGroup {
+		imageModels := make([]string, 0, len(models))
+		for _, modelName := range models {
+			if strings.EqualFold(modelName, "gpt-image") || strings.HasPrefix(strings.ToLower(modelName), "gpt-image-") {
+				imageModels = append(imageModels, modelName)
+			}
+		}
+		models = imageModels
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    service.GetGroupsEnabledModels(groupsToQuery),
+		"data":    models,
 	})
 }
 

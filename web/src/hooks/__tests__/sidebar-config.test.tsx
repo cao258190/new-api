@@ -141,6 +141,43 @@ describe('security sidebar visibility', () => {
   })
 })
 
+describe('image studio sidebar visibility', () => {
+  it('shows Image Studio by default in the chat area', () => {
+    const { result } = sidebarFor()
+    const items = result.current.find((group) => group.id === 'chat')?.items
+
+    expect(items?.map((item) => item.title)).toContain('Image Studio')
+    expect(items?.find((item) => item.title === 'Image Studio')).toMatchObject({
+      url: '/image-studio',
+    })
+  })
+
+  it.each([
+    [{ chat: { enabled: true, imageStudio: false } }, undefined],
+    [{ chat: { enabled: false } }, { chat: { imageStudio: true } }],
+    [undefined, { chat: { enabled: true, imageStudio: false } }],
+    [undefined, { chat: { enabled: false } }],
+  ])(
+    'admin and personal visibility rules can hide Image Studio (%j, %j)',
+    (admin, user) => {
+      const { result } = sidebarFor(admin, user)
+      expect(
+        result.current
+          .flatMap((group) => group.items)
+          .some((item) => item.title === 'Image Studio')
+      ).toBe(false)
+    }
+  )
+
+  it('adds the Image Studio setting to legacy admin configuration defaults', () => {
+    const config = parseSidebarModulesAdmin(
+      '{"chat":{"enabled":true,"playground":true}}'
+    )
+
+    expect(config.chat.imageStudio).toBe(true)
+  })
+})
+
 describe('audit log sidebar entry', () => {
   it('admin settings default Audit Logs to visible and preserve its independent toggle when saved', () => {
     const config = parseSidebarModulesAdmin(

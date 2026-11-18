@@ -118,6 +118,25 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 	userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
 	filters := GetChannelConstraints(param.Ctx).Filters
 	affinityRetryOffset := param.Ctx.GetInt(ginKeyChannelAffinityRetryOffset)
+	imageStudioFreeRoute := IsImageStudioFreeImageRequest(param.Ctx, param.TokenGroup)
+
+	if imageStudioFreeRoute {
+		for _, group := range GetImageStudioRouteGroups(userGroup) {
+			channel, err = model.GetRandomSatisfiedChannel(
+				group,
+				param.ModelName,
+				max(param.GetRetry()-affinityRetryOffset, 0),
+				filters,
+			)
+			if err != nil {
+				return nil, ImageStudioFreeImageGroup, err
+			}
+			if channel != nil {
+				return channel, ImageStudioFreeImageGroup, nil
+			}
+		}
+		return nil, ImageStudioFreeImageGroup, nil
+	}
 
 	if param.TokenGroup == "auto" {
 		autoGroups := GetRequestAutoGroups(param.Ctx, userGroup)
@@ -302,6 +321,7 @@ type ChannelSelectError struct {
 // callers. The caller still applies SetupContextForSelectedChannel.
 func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam) (*model.Channel, string, *ChannelSelectError) {
 	constraints := GetChannelConstraints(c)
+	imageStudioFreeRoute := IsImageStudioFreeImageRequest(c, retry.TokenGroup)
 	if pin, found, overridden := constraints.ResolvedPin(); found {
 		for _, lost := range overridden {
 			logger.LogWarn(c, common.LogText(
@@ -316,6 +336,14 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 		if channel.Status != common.ChannelStatusEnabled {
 			return nil, "", pinnedChannelUnavailable(pin, http.StatusForbidden, i18n.MsgDistributorChannelDisabled)
 		}
+		if imageStudioFreeRoute && !model.IsChannelEnabledForAnyGroupModel(GetImageStudioRouteGroups(common.GetContextKeyString(c, constant.ContextKeyUserGroup)), modelName, channel.Id) {
+			return nil, ImageStudioFreeImageGroup, &ChannelSelectError{
+				StatusCode: http.StatusForbidden,
+				Code:       types.ErrorCodeAccessDenied,
+				MessageID:  i18n.MsgDistributorNoAvailableChannel,
+				Params:     map[string]any{"Group": ImageStudioFreeImageGroup, "Model": modelName},
+			}
+		}
 		if ok, kind := model.ChannelSatisfiesFilters(channel, modelName, constraints.Filters); !ok {
 			return nil, "", &ChannelSelectError{
 				StatusCode: http.StatusBadRequest, Code: types.ErrorCode(kind), MessageID: i18n.MsgDistributorNoAvailableChannel,
@@ -329,7 +357,7 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 	usingGroup := retry.TokenGroup
 	var channel *model.Channel
 	var selectGroup string
-	if retry.GetRetry() == 0 {
+	if retry.GetRetry() == 0 && !imageStudioFreeRoute {
 		if preferredChannelID, found := GetPreferredChannelByAffinity(c, modelName, usingGroup); found {
 			affinityUsable := false
 			preferred, err := model.CacheGetChannel(preferredChannelID)

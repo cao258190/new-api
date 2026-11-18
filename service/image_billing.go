@@ -21,6 +21,12 @@ func PrepareImageBillingForRequest(c *gin.Context, info *relaycommon.RelayInfo, 
 		return types.NewErrorWithStatusCode(fmt.Errorf("image_count must be an integer between 1 and %d", dto.MaxImageN), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 	}
 	info.ImageRequestCount = count
+	if info.IsImageStudioFree {
+		info.PriceData.FreeModel = true
+		info.PriceData.QuotaToPreConsume = 0
+		info.PriceData.Quota = 0
+		return nil
+	}
 	var quota int
 	var err error
 	if snap := info.TieredBillingSnapshot; snap != nil && snap.BillingMode == "tiered_expr" {

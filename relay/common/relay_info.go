@@ -92,13 +92,15 @@ type RelayInfo struct {
 	FirstResponseTime time.Time
 	isFirstResponse   bool
 	//SendLastReasoningResponse bool
-	IsStream               bool
-	IsGeminiBatchEmbedding bool
-	IsPlayground           bool
-	UsePrice               bool
-	RelayMode              int
-	OriginModelName        string
-	ResponseModel          *ResponseModel
+	IsStream                    bool
+	IsGeminiBatchEmbedding      bool
+	IsPlayground                bool
+	IsImageStudioFree           bool
+	ImageStudioQuotaReservation *ImageStudioQuotaReservation
+	UsePrice                    bool
+	RelayMode                   int
+	OriginModelName             string
+	ResponseModel               *ResponseModel
 
 	// BillingModelName is the pricing identity for this request. It is kept
 	// separate from OriginModelName and UpstreamModelName so virtual pricing
@@ -235,6 +237,13 @@ type RelayInfo struct {
 	*ResponsesUsageInfo
 	*ChannelMeta
 	*TaskRelayInfo
+}
+
+type ImageStudioQuotaReservation struct {
+	Day        string
+	Generation string
+	ID         string
+	Images     int
 }
 
 // UpdateImageCount replaces the billable quantity without changing the frozen
@@ -654,10 +663,12 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		info.RelayMode = c.GetInt("relay_mode")
 	}
 
-	if strings.HasPrefix(c.Request.URL.Path, "/pg") {
+	if strings.HasPrefix(c.Request.URL.Path, "/pg") || common.GetContextKeyBool(c, constant.ContextKeyIsPlayground) {
 		info.IsPlayground = true
-		info.RequestURLPath = strings.TrimPrefix(info.RequestURLPath, "/pg")
-		info.RequestURLPath = "/v1" + info.RequestURLPath
+		if strings.HasPrefix(c.Request.URL.Path, "/pg") {
+			info.RequestURLPath = strings.TrimPrefix(info.RequestURLPath, "/pg")
+			info.RequestURLPath = "/v1" + info.RequestURLPath
+		}
 	}
 
 	userSetting, ok := common.GetContextKeyType[dto.UserSetting](c, constant.ContextKeyUserSetting)

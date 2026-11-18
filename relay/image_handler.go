@@ -125,6 +125,17 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 		defer closer.Close()
 		requestBody = body
 	}
+	if info.IsImageStudioFree {
+		if err := service.ResizeImageStudioFreeImageReservation(info.ImageStudioQuotaReservation, imageCount); err != nil {
+			statusCode := http.StatusServiceUnavailable
+			message := "Image Studio free quota is temporarily unavailable"
+			if errors.Is(err, service.ErrImageStudioQuotaExceeded) {
+				statusCode = http.StatusTooManyRequests
+				message = "Daily free image quota is insufficient"
+			}
+			return types.NewErrorWithStatusCode(errors.New(message), types.ErrorCodeInvalidRequest, statusCode, types.ErrOptionWithSkipRetry())
+		}
+	}
 	if billingErr := service.PrepareImageBillingForRequest(c, info, imageCount); billingErr != nil {
 		return billingErr
 	}
@@ -193,5 +204,9 @@ func ImageHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *type
 	}
 
 	service.PostTextConsumeQuota(c, info, usage.(*dto.Usage), logContent)
+	if info.IsImageStudioFree && info.ImageStudioQuotaReservation != nil {
+		service.SettleImageStudioFreeImages(info.ImageStudioQuotaReservation, imageN)
+		info.ImageStudioQuotaReservation = nil
+	}
 	return nil
 }
