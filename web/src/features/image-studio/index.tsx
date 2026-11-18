@@ -889,12 +889,6 @@ export function ImageStudio() {
       />
       <section className='flex min-w-0 flex-1 flex-col overflow-hidden'>
         <div className='mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col gap-5 p-4 md:p-6'>
-          <div>
-            <h1 className='text-xl font-semibold'>{t('Image Studio')}</h1>
-            <p className='text-muted-foreground text-sm'>
-              {t('Create and edit images with GPT Image models')}
-            </p>
-          </div>
           {selectedSession?.messages.length || pendingMessage ? (
             <Conversation>
               <ConversationContent className='mx-auto w-full max-w-6xl space-y-6 p-2 md:p-4'>

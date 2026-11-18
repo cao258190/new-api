@@ -160,6 +160,24 @@ describe('image studio retry', () => {
     i18next.removeResourceBundle('zhCN', 'translation')
   })
 
+  it('opens the conversation without a workspace heading or introductory text', async () => {
+    render(
+      <QueryClientProvider client={client}>
+        <ImageStudio />
+      </QueryClientProvider>
+    )
+
+    expect(
+      await screen.findByRole('button', { name: 'Generate' })
+    ).toBeVisible()
+    expect(
+      screen.queryByRole('heading', { level: 1, name: 'Image Studio' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByText('Create and edit images with GPT Image models')
+    ).not.toBeInTheDocument()
+  })
+
   it('shows a quota rejection in Chinese while keeping the original error in local history', async () => {
     const original =
       'Daily free image quota is insufficient (request id: studio-quota-test)'
