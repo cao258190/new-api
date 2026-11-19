@@ -15,14 +15,14 @@ concurrency:
 # Reuse local frontend and accounting checks; verify affected Go paths on Linux.
 # Production publishing remains a separate, protected registry workflow.
 env:
-  SOURCE_SHA: 5fb53113e00e9c219b798aa9382fb0df3aa36e36
+  SOURCE_SHA: 916ccb0fa7b67727581ade07e5b5f80b037fbc77
   UPSTREAM_SHA: c9c6da2786b6a0912215127e78e28fbc6650c85f
-  RELEASE_VERSION: custom-v2026.11.19.4-rc.1
-  IMAGE_REF: new-api-staging:custom-v2026.11.19.4-rc.1
+  RELEASE_VERSION: custom-v2026.11.19.5-rc.1
+  IMAGE_REF: new-api-staging:custom-v2026.11.19.5-rc.1
 
 jobs:
   verify:
-    name: Verify response usage regression
+    name: Verify stream start and response regression
     if: github.repository == 'cao258190/new-api' && github.ref == 'refs/heads/codex/request-plugin-usage-rewrite'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -42,7 +42,7 @@ jobs:
             go.sum
             relaykit/go.sum
             tokenkit/go.sum
-      - name: Verify root module and response accounting
+      - name: Verify root module, stream start and response accounting
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
@@ -50,7 +50,7 @@ jobs:
           touch web/dist/index.html
           go vet ./...
           go build ./...
-          go test ./controller ./model ./pkg/jsplugin ./plugins ./relay/... ./service
+          go test ./controller ./middleware ./model ./pkg/jsplugin ./pkg/requestpatch ./plugins ./relay/... ./service ./i18n
       - name: Verify relaykit independently
         working-directory: relaykit
         run: |
@@ -130,7 +130,7 @@ jobs:
           jq -n --arg version "$RELEASE_VERSION" --arg image "$IMAGE_REF" --arg id "$image_id" \
             --arg source "$(git rev-parse HEAD)" --arg upstream "$UPSTREAM_SHA" \
             --arg workflow_sha "$GITHUB_SHA" --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            '{version:$version,image_ref:$image,image_id:$id,source_sha:$source,upstream_sha:$upstream,workflow_sha:$workflow_sha,platform:"linux/amd64",run_url:$run_url,purpose:"isolated staging only",tests:{local:"root vet/build and affected plugin/model/relay/service tests passed; covers threshold accounting and missing upstream usage",frontend:"typecheck, changed-file lint/format, build and 334 usage-log tests passed; 16 processing-display tests rerun after formatting",linux_regression:"separate Verify response usage regression job; require overall run success",database_matrix:"not rerun: no schema, query or driver changes",image_smoke:"passed"},security_scanning:{enabled:false,policy:"existing isolated staging policy"}}' \
+            '{version:$version,image_ref:$image,image_id:$id,source_sha:$source,upstream_sha:$upstream,workflow_sha:$workflow_sha,platform:"linux/amd64",run_url:$run_url,purpose:"isolated staging only",tests:{local:"stream-start, plugin, patch, channel, service, i18n and focused HTTP/WebSocket/routing regressions passed; broad controller/middleware suites hit Windows temporary-file cleanup failures",frontend:"typecheck, changed-file lint, build and 16 processing-display tests passed; plugin lint/format passed",linux_regression:"separate Verify stream start and response regression job; require overall run success",database_matrix:"not rerun: no schema, query or driver changes",image_smoke:"passed"},security_scanning:{enabled:false,policy:"existing isolated staging policy"}}' \
             > "$RUNNER_TEMP/release/release.json"
           docker save "$IMAGE_REF" | gzip -1 > "$RUNNER_TEMP/release/image.tar.gz"
           cd "$RUNNER_TEMP/release"
