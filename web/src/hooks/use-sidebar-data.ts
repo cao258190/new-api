@@ -68,6 +68,7 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             title: t('Image Studio'),
             url: '/image-studio',
             icon: ImagePlus,
+            badge: t('Free tier'),
           },
           {
             title: t('Chat'),

@@ -142,13 +142,13 @@ describe('security sidebar visibility', () => {
 })
 
 describe('image studio sidebar visibility', () => {
-  it('shows Image Studio by default in the chat area', () => {
+  it('shows the Image Studio link with a free tier badge in the default chat area', () => {
     const { result } = sidebarFor()
     const items = result.current.find((group) => group.id === 'chat')?.items
 
-    expect(items?.map((item) => item.title)).toContain('Image Studio')
-    expect(items?.find((item) => item.title === 'Image Studio')).toMatchObject({
-      url: '/image-studio',
+    expect(items?.find((item) => item.url === '/image-studio')).toMatchObject({
+      title: 'Image Studio',
+      badge: 'Free tier',
     })
   })
 
@@ -249,10 +249,13 @@ describe('model pricing badge', () => {
     }
   }
 
-  /** Lists the sidebar entries of the current view that carry a badge. */
+  /** Lists settings entries that show a model pricing issue count. */
   function BadgedEntries() {
     const { navGroups } = useSidebarView()
     const entries = navGroups
+      .filter(
+        (group) => group.id === 'admin' || group.id === 'system-administration'
+      )
       .flatMap((group) => group.items)
       .flatMap((item) => [item, ...(item.items ?? [])])
       .filter((item) => item.badge)
