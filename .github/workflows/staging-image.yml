@@ -15,10 +15,10 @@ concurrency:
 # Reuse local frontend and accounting checks; verify affected Go paths on Linux.
 # Production publishing remains a separate, protected registry workflow.
 env:
-  SOURCE_SHA: 380933b631e1f962c818be7c8a5b6d5322a4ee7d
+  SOURCE_SHA: 51401660e99250a9aa0a3774bb3bfcad324592f9
   UPSTREAM_SHA: c9c6da2786b6a0912215127e78e28fbc6650c85f
-  RELEASE_VERSION: custom-v2026.11.19.6-rc.2
-  IMAGE_REF: new-api-staging:custom-v2026.11.19.6-rc.2
+  RELEASE_VERSION: custom-v2026.11.19.7-rc.1
+  IMAGE_REF: new-api-staging:custom-v2026.11.19.7-rc.1
 
 jobs:
   verify:
@@ -131,7 +131,7 @@ jobs:
           jq -n --arg version "$RELEASE_VERSION" --arg image "$IMAGE_REF" --arg id "$image_id" \
             --arg source "$(git rev-parse HEAD)" --arg upstream "$UPSTREAM_SHA" \
             --arg workflow_sha "$GITHUB_SHA" --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            '{version:$version,image_ref:$image,image_id:$id,source_sha:$source,upstream_sha:$upstream,workflow_sha:$workflow_sha,platform:"linux/amd64",run_url:$run_url,purpose:"isolated staging only",tests:{local:"root vet/build and requestplugin, requestpatch, plugins, channel and relay/common tests passed; deterministic delayed-start, cancellation and timeout regressions passed",frontend:"typecheck, production build, 14 config-form tests and i18n sync passed; changed plugin lint/format passed; repository plugin lint retains four pre-existing errors in other plugins",linux_regression:"separate Verify stream start and response regression job plus focused stream-start race test; require overall run success",database_matrix:"not rerun: no schema, query or driver changes",image_smoke:"passed"},security_scanning:{enabled:false,policy:"existing isolated staging policy"}}' \
+            '{version:$version,image_ref:$image,image_id:$id,source_sha:$source,upstream_sha:$upstream,workflow_sha:$workflow_sha,platform:"linux/amd64",run_url:$run_url,purpose:"isolated staging only",tests:{local:"requestplugin, requestpatch, plugins, channel, relay/common and service tests passed; Responses text, reasoning, tool-call output, input replay and failure cases passed",frontend:"typecheck and 14 config-form tests passed; existing schema form reused; changed plugin lint/format passed; production frontend built in this image",linux_regression:"separate Verify stream start and response regression job plus focused stream-start race test; require overall run success",database_matrix:"not rerun: no schema, query or driver changes",image_smoke:"passed"},security_scanning:{enabled:false,policy:"existing isolated staging policy"}}' \
             > "$RUNNER_TEMP/release/release.json"
           docker save "$IMAGE_REF" | gzip -1 > "$RUNNER_TEMP/release/image.tar.gz"
           cd "$RUNNER_TEMP/release"
