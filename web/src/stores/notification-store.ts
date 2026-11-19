@@ -19,11 +19,18 @@ For commercial licensing, please contact support@quantumnous.com
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 
+/** An acknowledged reminder or the local calendar day on which it was deferred. */
+type AnnouncementReminderState = true | string
+
 interface NotificationState {
   // Last read Notice content signature (full trimmed message)
   lastReadNotice: string
   // Array of read announcement keys (id or content hash)
   readAnnouncementKeys: string[]
+  announcementReminders: Record<
+    number,
+    Record<string, AnnouncementReminderState>
+  >
   // Timestamp of last "Close Today" action
   closedUntilDate: string | null
 
@@ -31,7 +38,11 @@ interface NotificationState {
   markNoticeRead: (noticeContent: string) => void
   markAnnouncementsRead: (keys: string[]) => void
   setClosedUntilDate: (date: string | null) => void
-  isAnnouncementRead: (key: string) => boolean
+  setAnnouncementReminders: (
+    userId: number,
+    ids: string[],
+    value: AnnouncementReminderState
+  ) => void
   isNoticeClosed: () => boolean
 }
 
@@ -44,6 +55,7 @@ export const useNotificationStore = create<NotificationState>()(
     (set, get) => ({
       lastReadNotice: '',
       readAnnouncementKeys: [],
+      announcementReminders: {},
       closedUntilDate: null,
 
       markNoticeRead: (noticeContent: string) => {
@@ -64,8 +76,19 @@ export const useNotificationStore = create<NotificationState>()(
         set({ closedUntilDate: date })
       },
 
-      isAnnouncementRead: (key: string) => {
-        return get().readAnnouncementKeys.includes(key)
+      setAnnouncementReminders: (userId, ids, value) => {
+        set((state) => {
+          const current = state.announcementReminders[userId] ?? {}
+          const updated = Object.fromEntries(
+            ids.map((id) => [id, current[id] === true ? true : value])
+          )
+          return {
+            announcementReminders: {
+              ...state.announcementReminders,
+              [userId]: { ...current, ...updated },
+            },
+          }
+        })
       },
 
       isNoticeClosed: () => {
@@ -81,6 +104,7 @@ export const useNotificationStore = create<NotificationState>()(
       partialize: (state) => ({
         lastReadNotice: state.lastReadNotice,
         readAnnouncementKeys: state.readAnnouncementKeys,
+        announcementReminders: state.announcementReminders,
         closedUntilDate: state.closedUntilDate,
       }),
     }

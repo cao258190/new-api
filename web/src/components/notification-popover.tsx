@@ -40,6 +40,7 @@ import {
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { getAnnouncementReminder } from '@/features/announcements/lib/get-announcement-reminder'
 import { getAnnouncementColorClass } from '@/lib/colors'
 import { formatDateTimeObject } from '@/lib/time'
 import { cn } from '@/lib/utils'
@@ -50,6 +51,7 @@ interface AnnouncementItem {
   content?: string
   extra?: string
   publishDate?: string | Date
+  reminder?: unknown
 }
 
 interface NotificationPopoverProps {
@@ -61,6 +63,7 @@ interface NotificationPopoverProps {
   notice: string
   announcements: AnnouncementItem[]
   loading: boolean
+  onShowImportantAnnouncements?: () => void
   className?: string
 }
 
@@ -243,6 +246,7 @@ function AnnouncementsContent({
       <div className='flex flex-col'>
         {announcements.map((item, idx) => {
           const announcementKey = getAnnouncementRenderKey(item)
+          const reminder = getAnnouncementReminder(item.reminder)
           const publishDate = item.publishDate
             ? new Date(item.publishDate)
             : null
@@ -259,6 +263,31 @@ function AnnouncementsContent({
                 <div className='flex items-start gap-3'>
                   <AnnouncementDot type={item.type} />
                   <div className='flex min-w-0 flex-1 flex-col gap-2'>
+                    {reminder ? (
+                      <h3 className='text-sm font-semibold break-words'>
+                        {reminder.title}
+                      </h3>
+                    ) : null}
+                    {reminder?.maintenance ? (
+                      <dl className='text-muted-foreground grid gap-1 text-xs break-words'>
+                        <div>
+                          <dt className='inline font-semibold'>
+                            {t('Maintenance window')}:{' '}
+                          </dt>
+                          <dd className='inline'>
+                            {reminder.maintenance.window}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className='inline font-semibold'>
+                            {t('Impact scope')}:{' '}
+                          </dt>
+                          <dd className='inline'>
+                            {reminder.maintenance.impact}
+                          </dd>
+                        </div>
+                      </dl>
+                    ) : null}
                     <div className='text-sm'>
                       <RichContent breaks content={item.content || ''} />
                     </div>
@@ -299,6 +328,7 @@ export function NotificationPopover({
   notice,
   announcements,
   loading,
+  onShowImportantAnnouncements,
   className,
 }: NotificationPopoverProps) {
   const { t } = useTranslation()
@@ -357,6 +387,16 @@ export function NotificationPopover({
           </TabsContent>
 
           <TabsContent value='announcements' className='mt-2'>
+            {onShowImportantAnnouncements ? (
+              <Button
+                variant='outline'
+                size='sm'
+                className='mb-2 w-full'
+                onClick={onShowImportantAnnouncements}
+              >
+                {t('View important announcements')}
+              </Button>
+            ) : null}
             <AnnouncementsContent
               announcements={announcements}
               loading={loading}

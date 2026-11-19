@@ -21,6 +21,7 @@ import { LanguageSwitcher } from '@/components/language-switcher'
 import { NotificationPopover } from '@/components/notification-popover'
 import { ProfileDropdown } from '@/components/profile-dropdown'
 import { Search } from '@/components/search'
+import { AnnouncementReminderDialog } from '@/features/announcements/components/announcement-reminder-dialog'
 import { SystemUpdateAction } from '@/features/system-update/system-update-action'
 import { useNotifications } from '@/hooks/use-notifications'
 import { useTopNavLinks } from '@/hooks/use-top-nav-links'
@@ -109,7 +110,9 @@ export function AppHeader({
   const links = dynamicLinks.length > 0 ? dynamicLinks : navLinks
 
   // Notifications hook
-  const notifications = useNotifications()
+  const notifications = useNotifications({
+    showAnnouncementReminders: showNotifications,
+  })
 
   return (
     <Header>
@@ -142,8 +145,20 @@ export function AppHeader({
               notice={notifications.notice}
               announcements={notifications.announcements}
               loading={notifications.loading}
+              onShowImportantAnnouncements={
+                notifications.pendingReminderCount > 0
+                  ? notifications.openAnnouncementReminders
+                  : undefined
+              }
             />
           )}
+          {notifications.reminderBatch ? (
+            <AnnouncementReminderDialog
+              announcements={notifications.reminderBatch}
+              onAcknowledge={notifications.acknowledgeAnnouncementReminders}
+              onSnooze={notifications.snoozeAnnouncementReminders}
+            />
+          ) : null}
           <LanguageSwitcher />
           {showConfigDrawer && <ConfigDrawer />}
           {showProfileDropdown && <ProfileDropdown />}
