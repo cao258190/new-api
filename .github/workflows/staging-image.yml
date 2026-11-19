@@ -15,10 +15,10 @@ concurrency:
 # Reuse local frontend and accounting checks; verify affected Go paths on Linux.
 # Production publishing remains a separate, protected registry workflow.
 env:
-  SOURCE_SHA: 06f3a5dd7e130b48b068e5ef2544a91dea804645
+  SOURCE_SHA: 5fb53113e00e9c219b798aa9382fb0df3aa36e36
   UPSTREAM_SHA: c9c6da2786b6a0912215127e78e28fbc6650c85f
-  RELEASE_VERSION: custom-v2026.11.19.3-rc.1
-  IMAGE_REF: new-api-staging:custom-v2026.11.19.3-rc.1
+  RELEASE_VERSION: custom-v2026.11.19.4-rc.1
+  IMAGE_REF: new-api-staging:custom-v2026.11.19.4-rc.1
 
 jobs:
   verify:
@@ -50,7 +50,7 @@ jobs:
           touch web/dist/index.html
           go vet ./...
           go build ./...
-          go test ./controller ./pkg/jsplugin ./plugins ./relay/... ./service
+          go test ./controller ./model ./pkg/jsplugin ./plugins ./relay/... ./service
       - name: Verify relaykit independently
         working-directory: relaykit
         run: |
@@ -130,7 +130,7 @@ jobs:
           jq -n --arg version "$RELEASE_VERSION" --arg image "$IMAGE_REF" --arg id "$image_id" \
             --arg source "$(git rev-parse HEAD)" --arg upstream "$UPSTREAM_SHA" \
             --arg workflow_sha "$GITHUB_SHA" --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            '{version:$version,image_ref:$image,image_id:$id,source_sha:$source,upstream_sha:$upstream,workflow_sha:$workflow_sha,platform:"linux/amd64",run_url:$run_url,purpose:"isolated staging only",tests:{local:"root vet/build and jsplugin/plugins/relay/service tests passed; includes real Responses HTTP/SSE/passthrough accounting regression",frontend:"no frontend source changes; config form uses plugin schema",linux_regression:"separate Verify response usage regression job; require overall run success",database_matrix:"not rerun: no schema, query or driver changes",image_smoke:"passed"},security_scanning:{enabled:false,policy:"existing isolated staging policy"}}' \
+            '{version:$version,image_ref:$image,image_id:$id,source_sha:$source,upstream_sha:$upstream,workflow_sha:$workflow_sha,platform:"linux/amd64",run_url:$run_url,purpose:"isolated staging only",tests:{local:"root vet/build and affected plugin/model/relay/service tests passed; covers threshold accounting and missing upstream usage",frontend:"typecheck, changed-file lint/format, build and 334 usage-log tests passed; 16 processing-display tests rerun after formatting",linux_regression:"separate Verify response usage regression job; require overall run success",database_matrix:"not rerun: no schema, query or driver changes",image_smoke:"passed"},security_scanning:{enabled:false,policy:"existing isolated staging policy"}}' \
             > "$RUNNER_TEMP/release/release.json"
           docker save "$IMAGE_REF" | gzip -1 > "$RUNNER_TEMP/release/image.tar.gz"
           cd "$RUNNER_TEMP/release"
