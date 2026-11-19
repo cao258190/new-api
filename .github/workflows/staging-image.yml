@@ -12,17 +12,53 @@ concurrency:
   cancel-in-progress: false
 
 # Build only the reviewed source for the existing isolated test environment.
-# Backend, frontend and database regressions passed locally before dispatch.
+# Reuse local frontend and accounting checks; verify affected Go paths on Linux.
 # Production publishing remains a separate, protected registry workflow.
 env:
-  SOURCE_SHA: 80467ea894c1132ec902423f6ef774d3ae387994
+  SOURCE_SHA: 2d49ea304bf0fee01c86d042c9771775eb946cfb
   UPSTREAM_SHA: c9c6da2786b6a0912215127e78e28fbc6650c85f
-  RELEASE_VERSION: custom-v2026.11.19.1-rc.1
-  IMAGE_REF: new-api-staging:custom-v2026.11.19.1-rc.1
+  RELEASE_VERSION: custom-v2026.11.19.2-rc.1
+  IMAGE_REF: new-api-staging:custom-v2026.11.19.2-rc.1
 
 jobs:
+  verify:
+    name: Verify response usage regression
+    if: github.repository == 'cao258190/new-api' && github.ref == 'refs/heads/codex/request-plugin-usage-rewrite'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      GOWORK: 'off'
+    steps:
+      - name: Checkout fixed source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            relaykit/go.sum
+            tokenkit/go.sum
+      - name: Verify root module and response accounting
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          mkdir -p web/dist
+          touch web/dist/index.html
+          go vet ./...
+          go build ./...
+          go test ./controller ./pkg/jsplugin ./plugins ./relay/... ./service
+      - name: Verify relaykit independently
+        working-directory: relaykit
+        run: |
+          set -euo pipefail
+          go build ./...
+          go test ./dto ./relayconvert/...
   build:
-    if: github.repository == 'cao258190/new-api' && github.ref == 'refs/heads/codex/sync-upstream-rc51-20261119'
+    if: github.repository == 'cao258190/new-api' && github.ref == 'refs/heads/codex/request-plugin-usage-rewrite'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -94,7 +130,7 @@ jobs:
           jq -n --arg version "$RELEASE_VERSION" --arg image "$IMAGE_REF" --arg id "$image_id" \
             --arg source "$(git rev-parse HEAD)" --arg upstream "$UPSTREAM_SHA" \
             --arg workflow_sha "$GITHUB_SHA" --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            '{version:$version,image_ref:$image,image_id:$id,source_sha:$source,upstream_sha:$upstream,workflow_sha:$workflow_sha,platform:"linux/amd64",run_url:$run_url,purpose:"isolated staging only",tests:{rerun:false,reason:"backend, frontend and three-database regressions passed locally for this source SHA",image_smoke:"passed"},security_scanning:{enabled:false,policy:"existing isolated staging policy"}}' \
+            '{version:$version,image_ref:$image,image_id:$id,source_sha:$source,upstream_sha:$upstream,workflow_sha:$workflow_sha,platform:"linux/amd64",run_url:$run_url,purpose:"isolated staging only",tests:{local:"focused backend and frontend checks passed; Windows controller full-suite cleanup failed",linux_regression:"separate Verify response usage regression job; require overall run success",database_matrix:"not rerun: no schema, query or driver changes",image_smoke:"passed"},security_scanning:{enabled:false,policy:"existing isolated staging policy"}}' \
             > "$RUNNER_TEMP/release/release.json"
           docker save "$IMAGE_REF" | gzip -1 > "$RUNNER_TEMP/release/image.tar.gz"
           cd "$RUNNER_TEMP/release"
