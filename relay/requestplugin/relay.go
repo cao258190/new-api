@@ -595,6 +595,8 @@ type DryRunInput struct {
 	// Reply, when set, is an answer text the reply checks run on, as on a
 	// non-stream answer in Format.
 	Reply *string
+	// Usage is a normalized response sample; nil leaves usage hooks out.
+	Usage *jsplugin.TokenUsage
 	// Instance, when set, is the only instance that runs, on every request,
 	// instead of the saved ones: an editor tries its settings before saving.
 	Instance *request_plugin_setting.Instance
@@ -612,6 +614,12 @@ type DryRunHeaders struct {
 	Remove []string          `json:"remove"`
 }
 
+// DryRunUsage shows the exact accounting quantities before and after policies.
+type DryRunUsage struct {
+	Before jsplugin.TokenUsage `json:"before"`
+	After  jsplugin.TokenUsage `json:"after"`
+}
+
 // DryRunResult is what a dry run did. Steps and Failed show the error text,
 // which a relay request never logs; Record is what a user's log shows.
 type DryRunResult struct {
@@ -622,6 +630,7 @@ type DryRunResult struct {
 	Body            json.RawMessage                   `json:"body"`
 	Headers         DryRunHeaders                     `json:"headers"`
 	ReasoningEffort string                            `json:"reasoning_effort,omitempty"`
+	Usage           *DryRunUsage                      `json:"usage,omitempty"`
 	// ReasoningEffortBefore is the effort before any plugin ran: a modifier's,
 	// else the request body's, "" when neither sets one.
 	ReasoningEffortBefore string `json:"reasoning_effort_before"`
@@ -689,6 +698,10 @@ func DryRun(ctx context.Context, input DryRunInput) DryRunResult {
 			call.Channel, call.Bound = input.Channel, input.Bound
 			result.Reply, _ = common.Marshal(dryRunReply(ctx, plan, call, *input.Reply, &result))
 		}
+	}
+	if input.Usage != nil && result.Rejected == nil && result.Failed == nil {
+		call.Channel, call.Bound = input.Channel, input.Bound
+		dryRunUsage(ctx, plan, call, *input.Usage, &result)
 	}
 	result.Record = relaycommon.CapRequestPluginRecord(result.Record)
 	for _, effect := range call.Headers {

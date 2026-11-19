@@ -176,24 +176,31 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 		}
 	}
 
-	if info.RelayFormat == types.RelayFormatOpenAI {
-		if shouldSendLastResp {
-			_ = sendStreamData(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
-		}
-	}
-
 	if !containStreamUsage {
 		usage = service.ResponseText2Usage(c, responseTextBuilder.String(), info.UpstreamModelName, info.GetEstimatePromptTokens())
 		usage.CompletionTokens += toolCount * 7
 	}
 
 	applyUsagePostProcessing(info, usage, common.StringToByteSlice(usageFrame))
+	upstreamUsage := usage
+	usage = info.RewriteResponseUsage(usage)
+	rawLastStreamData := lastStreamData
+	if usage != upstreamUsage && containStreamUsage && usageFrame == lastStreamData {
+		patched, err := PatchResponseUsageJSON([]byte(lastStreamData), "usage", types.RelayFormatOpenAI, usage)
+		if err != nil {
+			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+		}
+		lastStreamData = string(patched)
+	}
+	if info.RelayFormat == types.RelayFormatOpenAI && shouldSendLastResp {
+		_ = sendStreamData(c, info, lastStreamData, info.ChannelSetting.ForceFormat, info.ChannelSetting.ThinkingToContent)
+	}
 
 	for _, name := range streamFunctionCallNames {
 		info.CountBillableToolCall(dto.BuildInCallFunctionCall, name)
 	}
 
-	HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
+	HandleFinalResponse(c, info, rawLastStreamData, responseId, createAt, model, systemFingerprint, upstreamUsage, containStreamUsage)
 
 	return usage, nil
 }
@@ -324,6 +331,13 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 	}
 
 	applyUsagePostProcessing(info, &simpleResponse.Usage, responseBody)
+	if rewritten := info.RewriteResponseUsage(&simpleResponse.Usage); rewritten != &simpleResponse.Usage {
+		simpleResponse.Usage = *rewritten
+		responseBody, err = PatchResponseUsageJSON(responseBody, "usage", types.RelayFormatOpenAI, rewritten)
+		if err != nil {
+			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+		}
+	}
 
 	switch info.RelayFormat {
 	case types.RelayFormatOpenAI:
@@ -365,6 +379,16 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
 		}
 		responseBody = geminiRespStr
+	}
+	if simpleResponse.Usage.ResponseUsageRewritten {
+		path := "usage"
+		if info.RelayFormat == types.RelayFormatGemini {
+			path = "usageMetadata"
+		}
+		responseBody, err = PatchResponseUsageJSON(responseBody, path, info.RelayFormat, &simpleResponse.Usage)
+		if err != nil {
+			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+		}
 	}
 
 	service.IOCopyBytesGracefully(c, resp, responseBody)

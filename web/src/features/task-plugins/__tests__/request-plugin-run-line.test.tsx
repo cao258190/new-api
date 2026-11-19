@@ -59,3 +59,12 @@ test('a plugin that only reports says nothing about failures', () => {
   expect(screen.getByText('After the request')).toBeVisible()
   expect(screen.queryByText(/when it fails/)).toBeNull()
 })
+
+test('a usage-only plugin names its stage and keeps the previous usage on failure', () => {
+  render(<RequestPluginRunLine plugin={plugin(['usage'])} />)
+  expect(screen.getByText('Usage rewrite')).toBeVisible()
+  expect(
+    screen.getByText('Keeps the previous usage when it fails')
+  ).toBeVisible()
+  expect(screen.queryByText('Refuses the request when it fails')).toBeNull()
+})

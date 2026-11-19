@@ -130,7 +130,8 @@ type Meta struct {
 	// CompilePlugin sets it; a Meta built by hand has the task part.
 	noTaskPart bool
 	// transformHooks are the stage hooks the plugin exports, in
-	// TransformStages order, then ReportHook. CompilePlugin sets them.
+	// TransformStages order, then ReplyHook, UsageHook and ReportHook.
+	// CompilePlugin sets them.
 	transformHooks []string
 }
 
@@ -520,7 +521,7 @@ func CompilePlugin(source string, options Options) (*LoadedPlugin, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, stage := range append(slices.Clone(TransformStages), ReplyHook, ReportHook) {
+	for _, stage := range append(slices.Clone(TransformStages), ReplyHook, UsageHook, ReportHook) {
 		if !engine.HasExport(stage) {
 			continue
 		}
@@ -535,7 +536,7 @@ func CompilePlugin(source string, options Options) (*LoadedPlugin, error) {
 	}
 	if configSchema != nil {
 		if !meta.HasTransformPart() {
-			return nil, fmt.Errorf("plugin %s meta configSchema belongs to the request processing part; export ingress, request, outbound, egress, reply or report, or remove it", meta.Key)
+			return nil, fmt.Errorf("plugin %s meta configSchema belongs to the request processing part; export ingress, request, outbound, egress, reply, usage or report, or remove it", meta.Key)
 		}
 		if meta.ConfigSchema, err = decodeConfigSchema(configSchema); err != nil {
 			return nil, err
@@ -543,18 +544,18 @@ func CompilePlugin(source string, options Options) (*LoadedPlugin, error) {
 	}
 	if samples != nil {
 		if !meta.HasTransformPart() {
-			return nil, fmt.Errorf("plugin %s meta samples belongs to the request processing part; export ingress, request, outbound, egress, reply or report, or remove it", meta.Key)
+			return nil, fmt.Errorf("plugin %s meta samples belongs to the request processing part; export ingress, request, outbound, egress, reply, usage or report, or remove it", meta.Key)
 		}
 		if meta.Samples, err = decodeSamples(samples); err != nil {
 			return nil, err
 		}
 	}
 	if _, present := value.(map[string]any)["optional"]; present && !meta.HasTransformPart() {
-		return nil, fmt.Errorf("plugin %s meta optional belongs to the request processing part; export ingress, request, outbound, egress, reply or report, or remove it", meta.Key)
+		return nil, fmt.Errorf("plugin %s meta optional belongs to the request processing part; export ingress, request, outbound, egress, reply, usage or report, or remove it", meta.Key)
 	}
 	if engine.HasExport("validateConfig") {
 		if !meta.HasTransformPart() {
-			return nil, fmt.Errorf("plugin %s export validateConfig belongs to the request processing part; export ingress, request, outbound, egress, reply or report, or remove it", meta.Key)
+			return nil, fmt.Errorf("plugin %s export validateConfig belongs to the request processing part; export ingress, request, outbound, egress, reply, usage or report, or remove it", meta.Key)
 		}
 		callable, callableErr := engine.HasCallablePath(context.Background(), "validateConfig")
 		if callableErr != nil {
@@ -566,7 +567,7 @@ func CompilePlugin(source string, options Options) (*LoadedPlugin, error) {
 	}
 	if !engine.HasExport("buildSubmitRequest") {
 		if len(meta.Relay) == 0 && !meta.HasTransformPart() {
-			return nil, fmt.Errorf("plugin %s has no task part (export buildSubmitRequest), provider part (meta.relay) or request processing part (export ingress, request, outbound, egress, reply or report)", meta.Key)
+			return nil, fmt.Errorf("plugin %s has no task part (export buildSubmitRequest), provider part (meta.relay) or request processing part (export ingress, request, outbound, egress, reply, usage or report)", meta.Key)
 		}
 		object, _ := value.(map[string]any)
 		for _, field := range taskOnlyMetaFields {

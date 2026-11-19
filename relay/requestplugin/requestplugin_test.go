@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -1977,4 +1978,130 @@ func TestMasterSwitchOffKeepsRequestProcessing(t *testing.T) {
 	stored, err := storage.Bytes()
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"model":"gpt","messages":[],"patched":true}`, string(stored))
+}
+
+const usagePolicyPlugin = `export const meta = {apiVersion: 1, key: "rp-usage", name: "Usage policy", version: "1.0.0", author: {name: "Test"}};
+export function usage(ctx, tokens) {
+  const c = ctx.config;
+  if (c.throw && tokens.outputTokens > 0) throw new Error("policy failed");
+  if (c.patch) return {action: "continue", usage: c.patch};
+  const writes = tokens.cacheWriteTokens + (c.move || 0) + (c.unstable && tokens.outputTokens > 0 ? 1 : 0);
+  return {action: "continue", usage: {cacheWriteTokens: writes}};
+}`
+
+func registerUsagePolicy(t *testing.T) {
+	t.Helper()
+	plugin, err := jsplugin.DefaultRegistry.Register(usagePolicyPlugin, jsplugin.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, jsplugin.DefaultRegistry.Unregister(plugin.Meta.Key)) })
+}
+
+func TestResponseUsagePolicies(t *testing.T) {
+	registerUsagePolicy(t)
+	t.Run("scope order and frozen settings", func(t *testing.T) {
+		setInstances(t, `[
+			{"id":"channel","name":"Channel","plugin":"rp-usage","enabled":true,"config":{"move":1}},
+			{"id":"group","name":"Group","plugin":"rp-usage","enabled":true,"groups":["vip"],"config":{"move":3}},
+			{"id":"global","name":"Global","plugin":"rp-usage","enabled":true,"global":true,"config":{"move":2}},
+			{"id":"disabled","name":"Disabled","plugin":"rp-usage","enabled":false,"global":true,"config":{"move":8}},
+			{"id":"model","name":"Other model","plugin":"rp-usage","enabled":true,"global":true,"models":["other"],"config":{"move":8}}
+		]`)
+		plan := NewPlan()
+		require.NotNil(t, plan)
+		setInstances(t, `[]`)
+		check := newUsageCheck(context.Background(), plan, Call{Group: "vip", Model: "gpt", Bound: []string{"channel", "global"}})
+		before := jsplugin.TokenUsage{InputTokens: 100, CacheReadTokens: 89, OutputTokens: 2000}
+		after := check.run(before, dto.BillingUsageSemanticOpenAI)
+		assert.Equal(t, 6, after.CacheWriteTokens)
+		var order []string
+		for _, target := range check.targets {
+			order = append(order, target.instance.ID)
+		}
+		assert.Equal(t, []string{"global", "group", "channel"}, order)
+	})
+	for _, failure := range []string{"throw", "unstable"} {
+		t.Run(failure+" preserves published input and isolates retries", func(t *testing.T) {
+			setInstances(t, fmt.Sprintf(`[{"id":"one","name":"One","plugin":"rp-usage","enabled":true,"global":true,"config":{"move":8,"%s":true}}]`, failure))
+			plan := NewPlan()
+			check := newUsageCheck(context.Background(), plan, Call{Group: "default", Model: "gpt"})
+			before := jsplugin.TokenUsage{InputTokens: 100, CacheReadTokens: 89}
+			first := check.run(before, dto.BillingUsageSemanticOpenAI)
+			assert.Equal(t, 8, first.CacheWriteTokens)
+			before.OutputTokens = 2000
+			final := check.run(before, dto.BillingUsageSemanticOpenAI)
+			assert.Equal(t, 8, final.CacheWriteTokens)
+			assert.Equal(t, 2000, final.OutputTokens)
+			assert.Equal(t, "fail", check.targets[0].step.Action)
+			assert.Equal(t, final, check.run(before, dto.BillingUsageSemanticOpenAI))
+			before.OutputTokens = 0
+			retry := newUsageCheck(context.Background(), plan, Call{Group: "default", Model: "gpt", Attempt: 1})
+			assert.Equal(t, first, retry.run(before, dto.BillingUsageSemanticOpenAI))
+			assert.Equal(t, "continue", retry.targets[0].step.Action)
+		})
+	}
+	t.Run("dry run enforces protocol cache lifetimes", func(t *testing.T) {
+		setInstances(t, `[]`)
+		for _, format := range []types.RelayFormat{types.RelayFormatOpenAI, types.RelayFormatClaude} {
+			result := DryRun(context.Background(), DryRunInput{
+				Format: string(format), Body: []byte(`{}`), Model: "gpt", Group: "default",
+				Usage: &jsplugin.TokenUsage{InputTokens: 100, CacheReadTokens: 89},
+				Instance: &request_plugin_setting.Instance{ID: "ttl", Name: "TTL", Plugin: "usage-rewrite",
+					Config: []byte(`{"uncachedInputPercent":30,"cacheWriteTtl":"1h"}`)},
+			})
+			require.NotNil(t, result.Usage)
+			require.Len(t, result.Steps, 1)
+			if format == types.RelayFormatClaude {
+				assert.Equal(t, 8, result.Usage.After.CacheWrite1hTokens)
+				assert.Equal(t, "continue", result.Steps[0].Action)
+			} else {
+				assert.Equal(t, result.Usage.Before, result.Usage.After)
+				assert.Equal(t, "fail", result.Steps[0].Action)
+			}
+			assert.Nil(t, result.Failed, "a usage policy failure must never reject generation")
+		}
+	})
+	t.Run("explicit multimodal usage remains unchanged", func(t *testing.T) {
+		setInstances(t, `[{"id":"one","name":"One","plugin":"usage-rewrite","enabled":true,"global":true,"config":{"uncachedInputPercent":30}}]`)
+		c := newContext(`{}`, "default")
+		_, _, apiErr := Ingress(c, types.RelayFormatOpenAI)
+		require.Nil(t, apiErr)
+		info := newInfo()
+		info.RelayMode = relayconstant.RelayModeChatCompletions
+		finish := Reply(c, types.RelayFormatOpenAI, info)
+		defer finish()
+		raw := &dto.Usage{PromptTokens: 100, CompletionTokens: 2000,
+			PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 89, CachedTokensDetails: &dto.CachedTokenDetails{ImageTokens: common.GetPointer(10)}}}
+		assert.Same(t, raw, info.RewriteResponseUsage(raw))
+		assert.Equal(t, "unchecked", stepOf(t, info.RequestPluginSteps, "one", jsplugin.UsageHook).Action)
+		assert.Nil(t, info.ResponseUsageAudit)
+	})
+	t.Run("late unsupported facts keep published usage", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			late dto.Usage
+		}{
+			{name: "input detail", late: dto.Usage{PromptTokens: 100, CompletionTokens: 3000, InputTokensDetails: &dto.InputTokenDetails{ImageTokens: 7}}},
+			{name: "output detail", late: dto.Usage{PromptTokens: 100, CompletionTokens: 3000, OutputTokensDetails: &dto.OutputTokenDetails{AudioTokens: 7}}},
+			{name: "invalid input", late: dto.Usage{PromptTokens: -1, CompletionTokens: 3000}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				setInstances(t, `[{"id":"one","name":"One","plugin":"usage-rewrite","enabled":true,"global":true,"config":{"uncachedInputPercent":30,"outputPercent":50}}]`)
+				c := newContext(`{}`, "default")
+				_, _, apiErr := Ingress(c, types.RelayFormatOpenAI)
+				require.Nil(t, apiErr)
+				info := newInfo()
+				info.RelayMode = relayconstant.RelayModeChatCompletions
+				finish := Reply(c, types.RelayFormatOpenAI, info)
+				defer finish()
+				first := info.RewriteResponseUsage(&dto.Usage{PromptTokens: 100, CompletionTokens: 2000, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 89}})
+				require.True(t, first.ResponseUsageRewritten)
+				assert.Same(t, first, info.RewriteResponseUsage(&tc.late))
+				assert.Equal(t, 1000, first.CompletionTokens)
+				assert.Equal(t, 8, first.PromptTokensDetails.CacheCreationTokensTotal())
+				assert.Equal(t, "last_valid_snapshot", info.ResponseUsageAudit["fallback"])
+				assert.Same(t, first, info.RewriteResponseUsage(&dto.Usage{PromptTokens: 100, CompletionTokens: 4000}))
+				assert.Equal(t, 2000, info.ResponseUsageOriginal.CompletionTokens)
+			})
+		}
+	})
 }

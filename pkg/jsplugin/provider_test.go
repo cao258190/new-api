@@ -1149,6 +1149,98 @@ func TestCallReplyResults(t *testing.T) {
 	}
 }
 
+func TestUsageHookIsARequestProcessingPart(t *testing.T) {
+	plugin, err := CompilePlugin(transformMeta+`export function usage() { return {action: "continue"}; }`, Options{})
+	require.NoError(t, err)
+	assert.True(t, plugin.Meta.HasTransformPart())
+	assert.False(t, plugin.Meta.HasTaskPart())
+	assert.Equal(t, []string{UsageHook}, plugin.TransformHooks())
+
+	plugin, err = CompilePlugin(replyMeta+`export function report() {} export function usage() {} export function reply() {} export function egress() {}`, Options{})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"egress", ReplyHook, UsageHook, ReportHook}, plugin.TransformHooks())
+	_, err = CompilePlugin(replyMeta+`export const usage = {};`, Options{})
+	require.ErrorContains(t, err, `export "usage" is not a function`)
+}
+
+func TestCallUsageValidatesMergedQuantities(t *testing.T) {
+	initial := TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 89}
+	for _, tc := range []struct {
+		name   string
+		result string
+		want   TokenUsage
+		reason string
+	}{
+		{name: "omitted patch preserves input", result: `{action:"continue"}`, want: initial},
+		{name: "host values can be returned", result: `{action:"continue",usage:tokens}`, want: initial},
+		{name: "cache writes keep total input", result: `{action:"continue",usage:{cacheWriteTokens:8}}`, want: TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 89, CacheWriteTokens: 8}},
+		{name: "explicit zero replaces output", result: `{action:"continue",usage:{outputTokens:0}}`, want: TokenUsage{InputTokens: 100, CacheReadTokens: 89}},
+		{name: "write lifetime is part of total", result: `{action:"continue",usage:{cacheWriteTokens:11,cacheWrite1hTokens:4,cacheWrite12hTokens:7}}`, want: TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 89, CacheWriteTokens: 11, CacheWrite1hTokens: 4, CacheWrite12hTokens: 7}},
+		{name: "maximum output", result: `{action:"continue",usage:{outputTokens:2147483647}}`, want: TokenUsage{InputTokens: 100, OutputTokens: 2147483647, CacheReadTokens: 89}},
+		{name: "negative", result: `{action:"continue",usage:{outputTokens:-1}}`, reason: "usage.outputTokens must be an integer"},
+		{name: "fractional", result: `{action:"continue",usage:{outputTokens:0.5}}`, reason: "usage.outputTokens must be an integer"},
+		{name: "oversized", result: `{action:"continue",usage:{outputTokens:2147483648}}`, reason: "usage.outputTokens must be an integer"},
+		{name: "wrapped integer", result: `{action:"continue",usage:{outputTokens:18446744073709551615}}`, reason: "usage.outputTokens must be an integer"},
+		{name: "NaN", result: `{action:"continue",usage:{outputTokens:NaN}}`, reason: "usage.outputTokens must be an integer"},
+		{name: "infinity", result: `{action:"continue",usage:{outputTokens:Infinity}}`, reason: "usage.outputTokens must be an integer"},
+		{name: "null count", result: `{action:"continue",usage:{outputTokens:null}}`, reason: "usage.outputTokens must be an integer"},
+		{name: "string count", result: `{action:"continue",usage:{outputTokens:"3"}}`, reason: "usage.outputTokens must be an integer"},
+		{name: "cache categories exceed input", result: `{action:"continue",usage:{cacheWriteTokens:12}}`, reason: "usage.cacheReadTokens plus cacheWriteTokens must not exceed inputTokens"},
+		{name: "input lower than existing cache", result: `{action:"continue",usage:{inputTokens:88}}`, reason: "usage.cacheReadTokens plus cacheWriteTokens must not exceed inputTokens"},
+		{name: "write lifetime exceeds total", result: `{action:"continue",usage:{cacheWriteTokens:10,cacheWrite1hTokens:6,cacheWrite12hTokens:5}}`, reason: "usage.cacheWrite1hTokens plus cacheWrite12hTokens must not exceed cacheWriteTokens"},
+		{name: "unknown quantity", result: `{action:"continue",usage:{quota:1}}`, reason: `usage result has unknown member "quota"`},
+		{name: "null patch", result: `{action:"continue",usage:null}`, reason: "usage must be an object"},
+		{name: "array patch", result: `{action:"continue",usage:[]}`, reason: "usage must be an object"},
+		{name: "response effects prohibited", result: `{action:"continue",effects:[]}`, reason: `result has unknown member "effects"`},
+		{name: "rejection prohibited", result: `{action:"reject",code:"x"}`, reason: `action must be "continue"`},
+		{name: "missing action", result: `{usage:{outputTokens:1}}`, reason: `action must be "continue"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plugin, err := CompilePlugin(replyMeta+`export function usage(ctx, tokens) { return `+tc.result+`; }`, Options{})
+			require.NoError(t, err)
+			result, err := plugin.CallUsage(t.Context(), TransformContext{}, initial)
+			if tc.reason != "" {
+				var failure *TransformError
+				require.ErrorAs(t, err, &failure)
+				assert.Equal(t, TransformErrorResult, failure.Class)
+				assert.ErrorContains(t, err, tc.reason)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, result.Usage)
+			assert.Equal(t, tc.want != initial, result.Changed)
+		})
+	}
+}
+
+func TestCallUsageContextAndNetworkBoundary(t *testing.T) {
+	plugin, err := CompilePlugin(transformMeta+`
+export function usage(ctx, tokens) {
+  if (ctx.config.limit !== 3 || ctx.stage !== "usage" || ctx.format !== "claude" || ctx.channel.id !== 7 || tokens.inputTokens !== 100) throw new Error("context mismatch");
+  if (ctx.instance.name === "fetch") utils.fetch({url:"https://hooks.example/x"});
+  return {action:"continue",usage:{cacheWriteTokens:8},findings:[{rule:"rewrite",category:"cache",count:8}],notice:{en:"Cache usage adjusted",zh:"已调整缓存用量"}};
+}`, Options{})
+	require.NoError(t, err)
+	config, err := plugin.ValidateConfig(nil)
+	require.NoError(t, err)
+	ctx := WithFetcher(t.Context(), func(context.Context, FetchRequest) (FetchResponse, error) {
+		t.Fatal("usage hooks must not access the network")
+		return FetchResponse{}, nil
+	})
+	tctx := TransformContext{Format: "claude", Channel: &TransformChannel{ID: 7}, Config: config}
+	result, err := plugin.CallUsage(ctx, tctx, TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 89})
+	require.NoError(t, err)
+	assert.Equal(t, []TransformFinding{{Rule: "rewrite", Category: "cache", Count: 8}}, result.Findings)
+	assert.Equal(t, LocalizedText{"en": "Cache usage adjusted", "zh": "已调整缓存用量"}, result.Notice)
+	tctx.Instance.Name = "fetch"
+	_, err = plugin.CallUsage(ctx, tctx, TokenUsage{InputTokens: 100})
+	var failure *TransformError
+	require.ErrorAs(t, err, &failure)
+	assert.Equal(t, TransformErrorThrow, failure.Class)
+	assert.Equal(t, "utils.fetch is not available in usage", failure.Thrown)
+	assert.NotContains(t, err.Error(), "hooks.example")
+}
+
 // samplePlugin is a request plugin whose meta.samples is samples.
 func samplePlugin(samples string) string {
 	return `export const meta = {` + providerMeta + `, samples: ` + samples + `};

@@ -52,17 +52,20 @@ export function RequestPluginRunLine(props: {
   const { t } = useTranslation()
   const hooks = props.plugin.transform_hooks ?? []
   // Only the request stages can refuse a request: a reply check that fails
-  // stops the answer, and a report holds nothing up. A plugin without its
+  // stops the answer; usage failures keep the previous counts and a report
+  // holds nothing up. A plugin without its
   // stages listed is taken to change requests.
   const checksRequest =
     hooks.length === 0 ||
-    hooks.some((hook) => hook !== 'reply' && hook !== 'report')
+    hooks.some((hook) => !['reply', 'usage', 'report'].includes(hook))
   const checksReply = hooks.includes('reply')
   let failure: string | null = null
   if (checksRequest || checksReply) {
     if (props.plugin.optional) failure = t('Skipped when it fails')
     else if (checksRequest) failure = t('Refuses the request when it fails')
     else failure = t('Stops the reply when it fails')
+  } else if (hooks.includes('usage')) {
+    failure = t('Keeps the previous usage when it fails')
   }
   return (
     <span
@@ -88,7 +91,9 @@ export function RequestPluginRunLine(props: {
             aria-hidden='true'
             className={cn(
               'size-1.5 rounded-full',
-              props.plugin.optional ? 'bg-success' : 'bg-warning'
+              props.plugin.optional || (!checksRequest && !checksReply)
+                ? 'bg-success'
+                : 'bg-warning'
             )}
           />
           {failure}

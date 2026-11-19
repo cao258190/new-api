@@ -139,7 +139,7 @@ export function RequestProcessing() {
       <EmptyState
         title={t('No request processing yet')}
         description={t(
-          'Add an instance to check or change requests before they reach the model.'
+          'Add an instance to process requests, check replies or adjust response token usage.'
         )}
       />
     )

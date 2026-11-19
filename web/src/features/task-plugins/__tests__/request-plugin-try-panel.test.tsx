@@ -66,6 +66,20 @@ const replyPlugin: TaskPluginOption = {
   transform_hooks: ['ingress', 'reply'],
 }
 
+const usagePlugin: TaskPluginOption = {
+  ...plugin,
+  transform_hooks: ['usage'],
+}
+
+const upstreamUsage = {
+  inputTokens: 100,
+  outputTokens: 2000,
+  cacheReadTokens: 89,
+  cacheWriteTokens: 0,
+  cacheWrite1hTokens: 0,
+  cacheWrite12hTokens: 0,
+}
+
 let client: QueryClient
 
 beforeEach(() => {
@@ -551,6 +565,123 @@ test('a plugin without a reply check offers no sample reply', () => {
   const { panel } = renderPanel(result({}))
 
   expect(within(panel).queryByText('Sample reply')).toBeNull()
+  expect(
+    within(panel).queryByRole('region', { name: 'Response token usage' })
+  ).toBeNull()
+})
+
+test('a usage plugin sends sample counts with explicit zero and shows the cache redistribution', async () => {
+  const { post, panel, user } = renderPanel(
+    result({
+      usage: {
+        before: upstreamUsage,
+        after: { ...upstreamUsage, cacheWriteTokens: 8 },
+      },
+    }),
+    instance,
+    usagePlugin
+  )
+  expect(
+    within(panel).getByRole('spinbutton', { name: 'Total input tokens' })
+  ).toHaveValue(100)
+  await user.click(within(panel).getByRole('button', { name: 'Run' }))
+  expect(post.mock.calls[0][1]).toMatchObject({ usage: upstreamUsage })
+  const comparison = await within(panel).findByRole('table', {
+    name: 'Token usage changes',
+  })
+  const cacheRow = within(comparison).getByRole('row', {
+    name: 'Cache write tokens 0 8',
+  })
+  expect(cacheRow).toBeVisible()
+  expect(
+    within(comparison).getByRole('row', { name: 'Uncached input tokens 11 3' })
+  ).toBeVisible()
+  expect(
+    within(comparison).getByRole('row', { name: 'Output Tokens 2,000 2,000' })
+  ).toBeVisible()
+  expect(within(panel).queryByText(/^No changes/)).toBeNull()
+})
+
+test.each([
+  [
+    'Total input tokens',
+    '-1',
+    'Token counts must be whole numbers from 0 to 2147483647.',
+  ],
+  [
+    'Output Tokens',
+    '1.5',
+    'Token counts must be whole numbers from 0 to 2147483647.',
+  ],
+  [
+    'Output Tokens',
+    '2147483648',
+    'Token counts must be whole numbers from 0 to 2147483647.',
+  ],
+  [
+    'Output Tokens',
+    '',
+    'Token counts must be whole numbers from 0 to 2147483647.',
+  ],
+  [
+    'Cache read tokens',
+    '101',
+    'Cache reads and writes must fit within total input; cache lifetime counts must fit within total writes.',
+  ],
+  [
+    'Cache write tokens (1h)',
+    '1',
+    'Cache reads and writes must fit within total input; cache lifetime counts must fit within total writes.',
+  ],
+])(
+  'a usage sample with invalid %s=%s is refused before sending',
+  async (label, value, message) => {
+    const { post, panel, user } = renderPanel(result({}), instance, usagePlugin)
+    fireEvent.change(within(panel).getByRole('spinbutton', { name: label }), {
+      target: { value },
+    })
+    await user.click(within(panel).getByRole('button', { name: 'Run' }))
+    expect(within(panel).getByText(message)).toBeVisible()
+    expect(
+      within(panel).getByRole('spinbutton', { name: label })
+    ).toHaveAttribute('aria-invalid', 'true')
+    expect(post).not.toHaveBeenCalled()
+  }
+)
+
+test('a usage failure explains the fallback and a changed sample marks the result stale', async () => {
+  const { panel, user } = renderPanel(
+    result({
+      usage: { before: upstreamUsage, after: upstreamUsage },
+      steps: [
+        {
+          instance: 'try',
+          name: 'Rewrite',
+          plugin: 'request-redact',
+          stage: 'usage',
+          action: 'fail',
+          effects: 0,
+          duration_ms: 1,
+          error: 'invalid_result',
+        },
+      ],
+    }),
+    instance,
+    usagePlugin
+  )
+  await user.click(within(panel).getByRole('button', { name: 'Run' }))
+  expect(
+    await within(panel).findByText(
+      'The plugin failed, so the previous token usage is kept'
+    )
+  ).toBeVisible()
+  fireEvent.change(
+    within(panel).getByRole('spinbutton', { name: 'Output Tokens' }),
+    { target: { value: '0' } }
+  )
+  expect(
+    within(panel).getByText('The settings changed since this run.')
+  ).toBeVisible()
 })
 
 test('an effort a plugin sets shows next to the effort the request had', async () => {

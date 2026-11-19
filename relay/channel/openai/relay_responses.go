@@ -38,12 +38,16 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	info.ObserveResponseModel(responsesResponse.Model)
 	responseBody = rewriteSGLangResponsesCreatedAt(info, responseBody, "created_at", responsesResponse.CreatedAt)
 
-	// 写入新的 response body
-	service.IOCopyBytesGracefully(c, resp, responseBody)
-
 	// compute usage
 	usage := &dto.Usage{}
 	service.ApplyResponsesUsage(usage, responsesResponse.Usage)
+	if rewritten := info.RewriteResponseUsage(usage); rewritten != usage {
+		usage = rewritten
+		responseBody, err = PatchResponseUsageJSON(responseBody, "usage", types.RelayFormatOpenAIResponses, usage)
+		if err != nil {
+			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+		}
+	}
 	// Count actual tool invocations from Output (not tool declarations).
 	for _, output := range responsesResponse.Output {
 		switch output.Type {
@@ -62,6 +66,7 @@ func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		imageCounter.Observe(&responsesResponse.Output[i], &i)
 	}
 	imageCounter.Commit(info)
+	service.IOCopyBytesGracefully(c, resp, responseBody)
 
 	return usage, nil
 }
@@ -89,6 +94,26 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 			data = string(rewriteSGLangResponsesCreatedAt(info, []byte(data), "response.created_at", streamResponse.Response.CreatedAt))
 		}
 		accumulator.Observe(&streamResponse, common.StringToByteSlice(data))
+		if info.ResponseUsageRewrite != nil && streamResponse.Response != nil && (streamResponse.Type == "response.completed" || streamResponse.Type == "response.done" ||
+			streamResponse.Type == "response.failed" || streamResponse.Type == "response.incomplete" ||
+			streamResponse.Type == "response.cancelled" || streamResponse.Type == "response.canceled") {
+			original := accumulator.Finish()
+			if rewritten := info.RewriteResponseUsage(original); rewritten != original {
+				patched, err := PatchResponseUsageJSON([]byte(data), "response.usage", types.RelayFormatOpenAIResponses, rewritten)
+				if err != nil {
+					sr.Stop(err)
+					return
+				}
+				data = string(patched)
+			}
+		} else {
+			patched, err := RewriteResponseUsageJSON(info, []byte(data), types.RelayFormatOpenAIResponses)
+			if err != nil {
+				sr.Stop(err)
+				return
+			}
+			data = string(patched)
+		}
 		if err := helper.ResponseChunkData(c, streamResponse, data); err != nil {
 			sr.Stop(err)
 			return
@@ -101,7 +126,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 
 	common.SetContextKey(c, constant.ContextKeyResponseStreamStatus, info.StreamStatus)
 	info.StreamStatus.RequireTerminal()
-	return accumulator.Finish(), nil
+	return info.RewriteResponseUsage(accumulator.Finish()), nil
 }
 
 func rewriteSGLangResponsesCreatedAt(info *relaycommon.RelayInfo, payload []byte, path string, createdAt dto.IntValue) []byte {

@@ -50,14 +50,14 @@ func (m Meta) HasTransformPart() bool {
 }
 
 // TransformHooks returns the stage hooks the plugin exports, in
-// TransformStages order, then ReplyHook and ReportHook when it exports them;
+// TransformStages order, then ReplyHook, UsageHook and ReportHook when exported;
 // nil when it has no request processing part.
 func (m Meta) TransformHooks() []string {
 	return slices.Clone(m.transformHooks)
 }
 
 // TransformHooks returns the stage hooks the plugin exports, in
-// TransformStages order, then ReplyHook and ReportHook when it exports them;
+// TransformStages order, then ReplyHook, UsageHook and ReportHook when exported;
 // nil when it has no request processing part.
 func (p *LoadedPlugin) TransformHooks() []string {
 	return p.Meta.TransformHooks()
@@ -285,7 +285,7 @@ func (p *LoadedPlugin) CallReport(ctx context.Context, tctx TransformContext, re
 	return nil
 }
 
-// transformHookContext is the ctx argument of a stage, reply or report hook.
+// transformHookContext is the ctx argument of a stage, reply, usage or report hook.
 func (p *LoadedPlugin) transformHookContext(tctx *TransformContext) map[string]any {
 	config := p.hookConfig(tctx)
 	if len(config) == 0 {

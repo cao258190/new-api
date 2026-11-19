@@ -7,6 +7,9 @@ const (
 	BillingUsageSourceGeminiChat     = "gemini_chat"
 	BillingUsageSourceOAIChat        = "oai_chat"
 	BillingUsageSourceOAIResponses   = "oai_responses"
+	// BillingUsageSourceCanonical carries deliberately normalized accounting
+	// facts, including explicit zeroes, without changing their provider semantic.
+	BillingUsageSourceCanonical = "canonical"
 
 	BillingUsageSemanticAnthropic = "anthropic"
 	BillingUsageSemanticGemini    = "gemini"
@@ -20,6 +23,23 @@ type BillingUsage struct {
 	OpenAIUsage         *Usage               `json:"openai_usage,omitempty"`
 	ClaudeUsage         *ClaudeUsage         `json:"claude_usage,omitempty"`
 	GeminiUsageMetadata *GeminiUsageMetadata `json:"gemini_usage_metadata,omitempty"`
+	// ResponseUsageRewritten is an in-process guard preserved by cloning.
+	ResponseUsageRewritten bool `json:"-"`
+}
+
+// NewCanonicalBillingUsage snapshots adjusted accounting facts. Unlike a
+// provider snapshot, an explicit all-zero value is authoritative. The nested
+// Usage never carries another billing snapshot.
+func NewCanonicalBillingUsage(usage *Usage) *BillingUsage {
+	if usage == nil {
+		return nil
+	}
+	return &BillingUsage{
+		Source:                 BillingUsageSourceCanonical,
+		Semantic:               usage.UsageSemantic,
+		OpenAIUsage:            cloneOpenAIUsage(usage),
+		ResponseUsageRewritten: usage.ResponseUsageRewritten,
+	}
 }
 
 func NewClaudeMessagesBillingUsage(usage *ClaudeUsage) *BillingUsage {
@@ -164,7 +184,8 @@ func NewEstimatedGeminiChatBillingUsage(usage *Usage) *BillingUsage {
 // payload from a converted, potentially lossy Usage value.
 func CloneBillingUsageWithEstimatedCompletion(usage *BillingUsage, completionTokens int) *BillingUsage {
 	clone := CloneBillingUsage(usage)
-	if clone == nil || completionTokens <= 0 {
+	if clone == nil || completionTokens <= 0 || clone.ResponseUsageRewritten ||
+		strings.EqualFold(strings.TrimSpace(clone.Source), BillingUsageSourceCanonical) {
 		return clone
 	}
 
@@ -243,6 +264,13 @@ func (usage *BillingUsage) CanonicalUsage() (*Usage, bool) {
 	}
 	source := strings.TrimSpace(usage.Source)
 	semantic := strings.TrimSpace(usage.Semantic)
+	if strings.EqualFold(source, BillingUsageSourceCanonical) && usage.OpenAIUsage != nil {
+		canonical := cloneOpenAIUsage(usage.OpenAIUsage)
+		canonical.UsageSemantic = semantic
+		canonical.BillingUsage = CloneBillingUsage(usage)
+		canonical.ResponseUsageRewritten = usage.ResponseUsageRewritten
+		return canonical, true
+	}
 
 	// A structurally recognized but all-zero payload must not become the
 	// settlement source of truth; rejecting it lets settlement fall back to a
@@ -393,6 +421,10 @@ func cloneOpenAIUsage(usage *Usage) *Usage {
 	if usage.InputTokensDetails != nil {
 		inputTokensDetails := usage.InputTokensDetails.Clone()
 		clone.InputTokensDetails = &inputTokensDetails
+	}
+	if usage.OutputTokensDetails != nil {
+		outputTokensDetails := *usage.OutputTokensDetails
+		clone.OutputTokensDetails = &outputTokensDetails
 	}
 	return &clone
 }

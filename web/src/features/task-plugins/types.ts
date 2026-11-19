@@ -160,6 +160,16 @@ export type RequestPluginSample = {
   reply?: string
 }
 
+/** Protocol-independent response counts; input includes cache reads and writes. */
+export type RequestPluginTokenUsage = {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  cacheWrite1hTokens: number
+  cacheWrite12hTokens: number
+}
+
 export type RequestPluginDryRunRequest = {
   format: string
   path?: string
@@ -171,6 +181,8 @@ export type RequestPluginDryRunRequest = {
   instance?: RequestPluginInstance
   /** An answer from the model for the reply checks to read. */
   reply?: string
+  /** Sample upstream counts to run the usage hooks on, without charging. */
+  usage?: RequestPluginTokenUsage
 }
 
 export type RequestPluginDryRunStep = {
@@ -198,6 +210,11 @@ export type RequestPluginDryRunResult = {
   reply?: {
     text: string
     stopped: { instance: string; code: string; message: string } | null
+  } | null
+  /** Validated response counts before and after the usage hooks. */
+  usage?: {
+    before: RequestPluginTokenUsage
+    after: RequestPluginTokenUsage
   } | null
   /** What the log owner would see about this request in their logs. */
   record?: RequestPluginRecordItem[] | null

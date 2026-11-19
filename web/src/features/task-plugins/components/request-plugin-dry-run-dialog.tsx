@@ -57,12 +57,20 @@ import { getServerErrorMessage } from '@/lib/server-error-message'
 import { dryRunRequestPlugins } from '../api'
 import { localizedPluginName } from '../lib/plugin-name'
 import {
+  parseRequestPluginUsage,
+  REQUEST_PLUGIN_USAGE_SAMPLE,
+} from '../lib/request-plugin-usage'
+import {
   REQUEST_PLUGIN_DRY_RUN_FORMATS,
   REQUEST_PLUGIN_STAGE_LABELS,
   requestPluginDryRunExample,
   requestPluginDryRunPath,
 } from '../lib/request-plugins'
 import type { RequestPluginDryRunResult, RequestPluginInstance } from '../types'
+import {
+  RequestPluginUsageComparison,
+  RequestPluginUsageFields,
+} from './request-plugin-usage'
 import { SourceDiff } from './source-diff'
 
 type RequestPluginDryRunDialogProps = {
@@ -109,6 +117,17 @@ function DryRunForm(props: RequestPluginDryRunDialogProps) {
   )
   const [inputError, setInputError] = useState('')
   const [sentBody, setSentBody] = useState('')
+  const [usageDraft, setUsageDraft] = useState(REQUEST_PLUGIN_USAGE_SAMPLE)
+  const [usageError, setUsageError] = useState('')
+  const rewritesUsage = props.instances.some(
+    (instance) =>
+      instance.enabled &&
+      props.plugins.some(
+        (plugin) =>
+          plugin.key === instance.plugin &&
+          plugin.transform_hooks?.includes('usage')
+      )
+  )
   const mutation = useMutation({
     mutationFn: dryRunRequestPlugins,
     meta: { errorToast: false },
@@ -116,6 +135,11 @@ function DryRunForm(props: RequestPluginDryRunDialogProps) {
   const result = mutation.data
 
   const run = () => {
+    const usageResult = rewritesUsage
+      ? parseRequestPluginUsage(usageDraft)
+      : undefined
+    setUsageError(usageResult?.error ?? '')
+    if (usageResult?.error) return
     let parsed: unknown
     try {
       parsed = JSON.parse(body)
@@ -140,6 +164,7 @@ function DryRunForm(props: RequestPluginDryRunDialogProps) {
       group: group.trim() || undefined,
       channel_id: channel,
       body: parsed,
+      ...(usageResult?.usage && { usage: usageResult.usage }),
     })
   }
 
@@ -250,6 +275,16 @@ function DryRunForm(props: RequestPluginDryRunDialogProps) {
         />
         {inputError && <FieldError>{t(inputError)}</FieldError>}
       </Field>
+      {rewritesUsage && (
+        <RequestPluginUsageFields
+          value={usageDraft}
+          onChange={(value) => {
+            setUsageDraft(value)
+            setUsageError('')
+          }}
+          error={usageError}
+        />
+      )}
       <div className='flex justify-end'>
         <Button disabled={mutation.isPending || !model.trim()} onClick={run}>
           {mutation.isPending ? (
@@ -319,6 +354,12 @@ function DryRunResult(props: {
     <section className='space-y-4 border-t pt-4' aria-label={t('Result')}>
       <h3 className='text-sm font-semibold'>{t('Result')}</h3>
       {outcome}
+      {props.result.usage && (
+        <RequestPluginUsageComparison
+          before={props.result.usage.before}
+          after={props.result.usage.after}
+        />
+      )}
       {steps.length === 0 ? (
         <p className='text-muted-foreground text-sm'>
           {t('No instance ran for this request.')}

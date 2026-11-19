@@ -2,12 +2,14 @@ package gemini
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -18,6 +20,122 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGeminiResponseUsageRewriteMatchesClientAndSettlement(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+	for _, format := range []types.RelayFormat{types.RelayFormatGemini, types.RelayFormatOpenAI, types.RelayFormatClaude, types.RelayFormatOpenAIResponses} {
+		for _, mode := range []string{"json", "stream", "stream_missing_final_usage"} {
+			t.Run(fmt.Sprintf("%s/%s", format, mode), func(t *testing.T) {
+				body := `{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":2000,"totalTokenCount":2100,"cachedContentTokenCount":89,"vendor_tokens":17},"vendor_field":"retained"}`
+				stream := mode != "json"
+				if stream {
+					final := body
+					if mode == "stream_missing_final_usage" {
+						final = `{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}]}`
+					}
+					body = "data: " + `{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]}}],"usageMetadata":{"promptTokenCount":100,"totalTokenCount":100,"cachedContentTokenCount":89}}` + "\n\n" +
+						"data: " + final + "\n\ndata: [DONE]\n\n"
+				}
+				recorder := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(recorder)
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-test:generateContent", nil)
+				resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}
+				info := &relaycommon.RelayInfo{RelayFormat: format, IsStream: stream, ShouldIncludeUsage: true, DisablePing: true,
+					ChannelMeta:       &relaycommon.ChannelMeta{UpstreamModelName: "gemini-test"},
+					ClaudeConvertInfo: &relaycommon.ClaudeConvertInfo{LastMessagesType: relaycommon.LastMessageTypeNone}}
+				info.SetEstimatePromptTokens(100)
+				var originalWrites []int
+				info.ResponseUsageRewrite = func(raw *dto.Usage) *dto.Usage {
+					original := raw
+					if canonical, ok := raw.BillingUsage.CanonicalUsage(); ok {
+						original = canonical
+					}
+					originalWrites = append(originalWrites, original.PromptTokensDetails.CacheCreationTokensTotal())
+					adjusted := *original
+					adjusted.PromptTokensDetails = original.PromptTokensDetails.Clone()
+					adjusted.InputTokens, adjusted.PromptTokens = 100, 100
+					adjusted.OutputTokens, adjusted.CompletionTokens = 0, 0
+					adjusted.TotalTokens = 100
+					adjusted.PromptTokensDetails.CachedTokens = 89
+					adjusted.PromptTokensDetails.CacheWriteTokens = original.PromptTokensDetails.CacheCreationTokensTotal() + 7
+					adjusted.ResponseUsageRewritten = true
+					adjusted.BillingUsage = dto.NewCanonicalBillingUsage(&adjusted)
+					return &adjusted
+				}
+				var usage *dto.Usage
+				var apiErr *types.NewAPIError
+				switch format {
+				case types.RelayFormatGemini:
+					if stream {
+						usage, apiErr = GeminiTextGenerationStreamHandler(c, info, resp)
+					} else {
+						usage, apiErr = GeminiTextGenerationHandler(c, info, resp)
+					}
+				case types.RelayFormatOpenAIResponses:
+					if stream {
+						usage, apiErr = GeminiResponsesStreamHandler(c, info, resp)
+					} else {
+						usage, apiErr = GeminiResponsesHandler(c, info, resp)
+					}
+				default:
+					if stream {
+						usage, apiErr = GeminiChatStreamHandler(c, info, resp)
+					} else {
+						usage, apiErr = GeminiChatHandler(c, info, resp)
+					}
+				}
+				require.Nil(t, apiErr)
+				require.NotNil(t, usage)
+				assert.Equal(t, 100, usage.PromptTokens)
+				assert.Zero(t, usage.CompletionTokens)
+				assert.Equal(t, 7, usage.PromptTokensDetails.CacheCreationTokensTotal())
+				require.NotEmpty(t, originalWrites)
+				for _, count := range originalWrites {
+					assert.Zero(t, count, "the converter must retain original usage")
+				}
+				var visible ojson.Result
+				for line := range strings.SplitSeq(recorder.Body.String(), "\n") {
+					line = strings.TrimPrefix(line, "data: ")
+					for _, path := range []string{"usage", "message.usage", "response.usage", "usageMetadata"} {
+						if candidate := ojson.Get(line, path); candidate.IsObject() {
+							visible = candidate
+						}
+					}
+				}
+				require.True(t, visible.IsObject(), recorder.Body.String())
+				var snapshot dto.BillingUsage
+				require.NoError(t, common.UnmarshalJsonStr(visible.Get("billing_usage").Raw, &snapshot))
+				canonical, ok := snapshot.CanonicalUsage()
+				require.True(t, ok)
+				assert.Equal(t, 100, canonical.PromptTokens)
+				assert.Equal(t, 7, canonical.PromptTokensDetails.CacheCreationTokensTotal())
+				assert.Zero(t, canonical.CompletionTokens)
+				inputPath, outputPath, readPath, writePath := "prompt_tokens", "completion_tokens", "prompt_tokens_details.cached_tokens", "prompt_tokens_details.cache_write_tokens"
+				input := int64(100)
+				switch format {
+				case types.RelayFormatGemini:
+					inputPath, outputPath, readPath, writePath = "promptTokenCount", "candidatesTokenCount", "cachedContentTokenCount", "cacheWriteTokenCount"
+				case types.RelayFormatClaude:
+					inputPath, outputPath, readPath, writePath = "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"
+					input = 4
+				case types.RelayFormatOpenAIResponses:
+					inputPath, outputPath, readPath, writePath = "input_tokens", "output_tokens", "input_tokens_details.cached_tokens", "input_tokens_details.cache_write_tokens"
+				}
+				assert.Equal(t, input, visible.Get(inputPath).Int())
+				assert.Zero(t, visible.Get(outputPath).Int())
+				assert.Equal(t, int64(89), visible.Get(readPath).Int())
+				assert.Equal(t, int64(7), visible.Get(writePath).Int())
+				if !stream && format == types.RelayFormatGemini {
+					assert.Equal(t, "retained", ojson.Get(recorder.Body.String(), "vendor_field").Str)
+					assert.Equal(t, int64(17), visible.Get("vendor_tokens").Int())
+				}
+			})
+		}
+	}
+}
 
 func TestStreamResponseGeminiChat2OpenAIAttachesUsageMetadata(t *testing.T) {
 	t.Parallel()

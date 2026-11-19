@@ -7,6 +7,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -42,12 +43,22 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 	// In that case the scanner stops without a transport error and the partial
 	// upstream usage remains billable.
 	streamFailed := false
+	var finalUsage *dto.Usage
 
 	sendResponsesEvent := func(eventType string, payload dto.ResponsesStreamResponse) bool {
 		payload.Type = eventType
 		data, err := common.Marshal(payload)
 		if err != nil {
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
+			return false
+		}
+		if finalUsage != nil && payload.Response != nil && payload.Response.Usage != nil {
+			data, err = openai.PatchResponseUsageJSON(data, "response.usage", types.RelayFormatOpenAIResponses, finalUsage)
+		} else {
+			data, err = openai.RewriteResponseUsageJSON(info, data, types.RelayFormatOpenAIResponses)
+		}
+		if err != nil {
+			streamErr = types.NewError(err, types.ErrorCodeBadResponseBody)
 			return false
 		}
 		if err := helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: eventType}, string(data)); err != nil {
@@ -120,6 +131,12 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 			info.UpstreamModelName = claudeResponse.Message.Model
 		}
 		FormatClaudeResponseInfo(&claudeResponse, nil, claudeInfo)
+		if info.ResponseUsageRewrite != nil && claudeResponse.Type == "message_delta" {
+			finalizeClaudeStreamUsage(c, info, claudeInfo)
+			if rewritten := info.RewriteResponseUsage(claudeInfo.Usage); rewritten != claudeInfo.Usage {
+				finalUsage = rewritten
+			}
+		}
 		countClaudeStreamBillableTools(info, &claudeResponse)
 		hostedEvents, consumed, err := hostedBridge.Convert(&claudeResponse, state)
 		if err != nil {
@@ -162,10 +179,13 @@ func ClaudeResponsesStreamHandler(c *gin.Context, resp *http.Response, info *rel
 		return nil, streamErr
 	}
 	if streamFailed {
-		return claudeInfo.Usage, nil
+		return info.RewriteResponseUsage(claudeInfo.Usage), nil
 	}
 
 	HandleStreamFinalResponse(c, info, claudeInfo)
+	if claudeInfo.Usage.ResponseUsageRewritten {
+		finalUsage = claudeInfo.Usage
+	}
 	openAIUsage := buildOpenAIStyleUsageFromClaudeUsage(claudeInfo.Usage)
 	state.SetUsage(&openAIUsage)
 	finalResults, err := service.FinalizeStreamResponse(c, info, state)

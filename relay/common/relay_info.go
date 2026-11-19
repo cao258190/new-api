@@ -175,6 +175,17 @@ type RelayInfo struct {
 	// RequestPluginRecord is the public record of the request plugin changes:
 	// the request's ingress, then the current attempt's stages.
 	RequestPluginRecord []RequestPluginRecord
+	// ResponseUsageRewrite is the current attempt's checked usage policy.
+	// It returns an owned value and never modifies an upstream accumulator.
+	ResponseUsageRewrite func(*dto.Usage) *dto.Usage
+	// ResponseUsageAudit retains raw and adjusted counts for administrator
+	// diagnostics. Only numeric accounting facts are recorded here.
+	ResponseUsageAudit map[string]any
+	// ResponseUsageOriginal is the unadjusted accounting snapshot, used for
+	// routing feedback rather than the gateway's pricing policy.
+	ResponseUsageOriginal *dto.Usage
+	// ResponseUsageInputTokens preserves the actual context length for tiers.
+	ResponseUsageInputTokens int
 	// requestPluginIngressRecord counts the ingress entries of
 	// RequestPluginRecord, which every attempt keeps.
 	requestPluginIngressRecord int
@@ -298,6 +309,10 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	info.ClaudeToChatStreamState = nil
 	info.ChatToGeminiStreamState = nil
 	info.RequestPluginHeaders = nil
+	info.ResponseUsageRewrite = nil
+	info.ResponseUsageAudit = nil
+	info.ResponseUsageOriginal = nil
+	info.ResponseUsageInputTokens = 0
 	info.RequestPluginRecord = info.RequestPluginRecord[:min(info.requestPluginIngressRecord, len(info.RequestPluginRecord))]
 	channelType := common.GetContextKeyInt(c, constant.ContextKeyChannelType)
 	paramOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelParamOverride)

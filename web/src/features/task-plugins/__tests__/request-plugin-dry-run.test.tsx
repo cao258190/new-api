@@ -65,7 +65,10 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-function renderDryRun(result: RequestPluginDryRunResult) {
+function renderDryRun(
+  result: RequestPluginDryRunResult,
+  offered: TaskPluginOption[] = plugins
+) {
   const post = vi
     .spyOn(api, 'post')
     .mockResolvedValue({ data: { success: true, data: result } })
@@ -79,13 +82,42 @@ function renderDryRun(result: RequestPluginDryRunResult) {
         open
         onOpenChange={() => undefined}
         instances={instances}
-        plugins={plugins}
+        plugins={offered}
         groups={['default', 'vip']}
       />
     </QueryClientProvider>
   )
   return { post, user: userEvent.setup() }
 }
+
+test('saved usage instances receive the sample and show the same validated counts in the comparison', async () => {
+  const usage = {
+    inputTokens: 100,
+    outputTokens: 2000,
+    cacheReadTokens: 89,
+    cacheWriteTokens: 0,
+    cacheWrite1hTokens: 0,
+    cacheWrite12hTokens: 0,
+  }
+  const { post, user } = renderDryRun(
+    {
+      rejected: null,
+      failed: null,
+      steps: [],
+      body: {},
+      usage: { before: usage, after: { ...usage, cacheWriteTokens: 8 } },
+    },
+    [{ ...plugins[0], transform_hooks: ['usage'] }]
+  )
+  await user.click(screen.getByRole('button', { name: 'Run' }))
+  expect(post.mock.calls[0][1]).toMatchObject({ usage })
+  const comparison = await screen.findByRole('table', {
+    name: 'Token usage changes',
+  })
+  expect(
+    within(comparison).getByRole('row', { name: 'Uncached input tokens 11 3' })
+  ).toBeVisible()
+})
 
 test('a dry run sends the sample request and shows the refusal with each step', async () => {
   const { post, user } = renderDryRun({

@@ -48,6 +48,40 @@ func runRequestPlugin(t *testing.T, key, stage, config string, req jsplugin.Tran
 	return result
 }
 
+func TestUsageRewritePlugin(t *testing.T) {
+	plugin, found := jsplugin.DefaultRegistry.Generation().Get("usage-rewrite")
+	require.True(t, found)
+	initial := jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 89}
+	for _, tc := range []struct {
+		name   string
+		config string
+		input  jsplugin.TokenUsage
+		want   jsplugin.TokenUsage
+	}{
+		{"defaults preserve usage", `{}`, initial, initial},
+		{"thirty percent keeps three uncached", `{"uncachedInputPercent":30}`, initial, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 89, CacheWriteTokens: 8}},
+		{"all uncached input becomes writes", `{"uncachedInputPercent":0}`, initial, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 89, CacheWriteTokens: 11}},
+		{"new writes use one-hour lifetime", `{"uncachedInputPercent":30,"cacheWriteTtl":"1h"}`, initial, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 89, CacheWriteTokens: 8, CacheWrite1hTokens: 8}},
+		{"new writes preserve existing lifetimes", `{"uncachedInputPercent":50,"cacheWriteTtl":"12h"}`, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 80, CacheWriteTokens: 10, CacheWrite1hTokens: 4}, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 80, CacheWriteTokens: 15, CacheWrite1hTokens: 4, CacheWrite12hTokens: 5}},
+		{"output percentage rounds down", `{"outputPercent":30}`, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 11, CacheReadTokens: 89}, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 3, CacheReadTokens: 89}},
+		{"explicit free output", `{"outputPercent":0}`, initial, jsplugin.TokenUsage{InputTokens: 100, CacheReadTokens: 89}},
+		{"all cache remains unchanged", `{"uncachedInputPercent":0}`, jsplugin.TokenUsage{InputTokens: 100, CacheReadTokens: 90, CacheWriteTokens: 10}, jsplugin.TokenUsage{InputTokens: 100, CacheReadTokens: 90, CacheWriteTokens: 10}},
+		{"zero quantities stay zero", `{"uncachedInputPercent":0,"outputPercent":0}`, jsplugin.TokenUsage{}, jsplugin.TokenUsage{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config, err := plugin.ValidateConfig(json.RawMessage(tc.config))
+			require.NoError(t, err)
+			result, err := plugin.CallUsage(t.Context(), jsplugin.TransformContext{Config: config}, tc.input)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, result.Usage)
+		})
+	}
+	for _, config := range []string{`{"uncachedInputPercent":-1}`, `{"uncachedInputPercent":101}`, `{"uncachedInputPercent":0.5}`, `{"outputPercent":101}`, `{"cacheWriteTtl":"forever"}`} {
+		_, err := plugin.ValidateConfig(json.RawMessage(config))
+		require.Error(t, err, config)
+	}
+}
+
 // applyEffects applies a result's effects to body and headers through the
 // host's own decoder, so every effect also passes the host's checks.
 func applyEffects(t *testing.T, body string, result jsplugin.TransformResult) (string, http.Header) {

@@ -410,6 +410,7 @@ const TRANSFORM_EXPORTS = [
   'outbound',
   'egress',
   'reply',
+  'usage',
   'report',
 ]
 

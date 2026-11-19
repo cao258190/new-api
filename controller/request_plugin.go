@@ -170,6 +170,8 @@ type requestPluginDryRunRequest struct {
 	Body      json.RawMessage `json:"body"`
 	// Reply is an answer text to run the reply checks on.
 	Reply *string `json:"reply"`
+	// Usage supplies normalized response quantities for a usage dry run.
+	Usage *jsplugin.TokenUsage `json:"usage"`
 	// Instance is an unsaved instance to run alone instead of the saved ones.
 	Instance *request_plugin_setting.Instance `json:"instance"`
 }
@@ -192,6 +194,12 @@ func DryRunRequestPlugins(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("A dry run reply must not exceed {{max}} bytes", map[string]any{"max": maxRequestPluginDryRunReplyBytes}))
 		return
 	}
+	if request.Usage != nil {
+		if err := jsplugin.ValidateTokenUsage(*request.Usage); err != nil {
+			common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("A dry run needs valid token usage: {{error}}", map[string]any{"error": err.Error()}))
+			return
+		}
+	}
 	input := requestplugin.DryRunInput{
 		Format:         request.Format,
 		Path:           request.Path,
@@ -201,6 +209,7 @@ func DryRunRequestPlugins(c *gin.Context) {
 		ModifierEffort: helper.ModelModifierEffort(request.Model),
 		User:           jsplugin.TransformUser{ID: c.GetInt("id"), Username: c.GetString("username")},
 		Reply:          request.Reply,
+		Usage:          request.Usage,
 	}
 	if request.Instance != nil {
 		instance := *request.Instance

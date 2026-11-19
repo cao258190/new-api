@@ -53,6 +53,11 @@ import {
   requestPluginSampleTexts,
 } from '../lib/request-plugin-samples'
 import {
+  parseRequestPluginUsage,
+  REQUEST_PLUGIN_USAGE_FIELDS,
+  REQUEST_PLUGIN_USAGE_SAMPLE,
+} from '../lib/request-plugin-usage'
+import {
   REQUEST_PLUGIN_DRY_RUN_FORMATS,
   REQUEST_PLUGIN_EFFORT_LABELS,
   requestPluginDryRunExample,
@@ -64,6 +69,10 @@ import type {
   RequestPluginInstance,
   RequestPluginSample,
 } from '../types'
+import {
+  RequestPluginUsageComparison,
+  RequestPluginUsageFields,
+} from './request-plugin-usage'
 
 type RequestPluginTryPanelProps = {
   plugin: TaskPluginOption
@@ -382,7 +391,14 @@ function TryResult(props: {
   const reply = result.reply
   const replyMasked =
     reply && props.sentReply !== undefined && reply.text !== props.sentReply
+  const usageChanged =
+    result.usage &&
+    REQUEST_PLUGIN_USAGE_FIELDS.some(
+      (field) =>
+        result.usage?.before[field.key] !== result.usage?.after[field.key]
+    )
   const changed =
+    usageChanged ||
     replyMasked ||
     reply?.stopped ||
     entries.some(
@@ -406,7 +422,9 @@ function TryResult(props: {
   // request.
   const failedOnReply = failedStep?.stage === 'reply'
   let failedTitle = t('The plugin failed, so the request would be refused')
-  if (failedOnReply && props.plugin.optional) {
+  if (failedStep?.stage === 'usage') {
+    failedTitle = t('The plugin failed, so the previous token usage is kept')
+  } else if (failedOnReply && props.plugin.optional) {
     failedTitle = t(
       'The plugin failed, so the reply goes on without its changes'
     )
@@ -441,11 +459,18 @@ function TryResult(props: {
       </div>
     )
   } else if (!changed) {
+    let unchanged = t('No changes. The request is sent as it is.')
+    if (reply) {
+      unchanged = t(
+        'No changes. The request and the reply go through as they are.'
+      )
+    }
+    if (result.usage) {
+      unchanged = t('No changes. The response token usage is unchanged.')
+    }
     outcome = (
       <p className='bg-background text-muted-foreground rounded-xl border p-3 text-sm'>
-        {reply
-          ? t('No changes. The request and the reply go through as they are.')
-          : t('No changes. The request is sent as it is.')}
+        {unchanged}
       </p>
     )
   }
@@ -517,6 +542,12 @@ function TryResult(props: {
         />
       )}
       {!result.rejected && replyOutcome}
+      {!result.rejected && result.usage && (
+        <RequestPluginUsageComparison
+          before={result.usage.before}
+          after={result.usage.after}
+        />
+      )}
       {entries.length > 0 && (
         <div className='space-y-1.5 pt-2'>
           <p className='text-muted-foreground text-xs'>
@@ -556,13 +587,17 @@ export function RequestPluginTryPanel(props: RequestPluginTryPanelProps) {
   )
   const [pastedReply, setPastedReply] = useState('')
   const [inputError, setInputError] = useState('')
+  const [usageDraft, setUsageDraft] = useState(REQUEST_PLUGIN_USAGE_SAMPLE)
+  const [usageError, setUsageError] = useState('')
   const [run, setRun] = useState<{
     body: unknown
     reply?: string
     instance: string
+    usage: string
   }>()
   const image = useMemo(drawSampleImage, [])
   const checksReplies = Boolean(props.plugin.transform_hooks?.includes('reply'))
+  const rewritesUsage = Boolean(props.plugin.transform_hooks?.includes('usage'))
   const genericReply = t(
     'Yes, the soft colors and wide frame suit a phone wallpaper. I sent the full answer to alex@example.com; call +14155550123 if you would like a different crop.'
   )
@@ -615,7 +650,12 @@ export function RequestPluginTryPanel(props: RequestPluginTryPanelProps) {
     meta: { errorToast: false },
   })
   const instanceKey = props.instance ? JSON.stringify(props.instance) : ''
-  const stale = Boolean(mutation.data && run && run.instance !== instanceKey)
+  const usageKey = rewritesUsage ? JSON.stringify(usageDraft) : ''
+  const stale = Boolean(
+    mutation.data &&
+    run &&
+    (run.instance !== instanceKey || run.usage !== usageKey)
+  )
 
   const chooseSample = (index: number) => {
     setSampleIndex(index)
@@ -626,6 +666,11 @@ export function RequestPluginTryPanel(props: RequestPluginTryPanelProps) {
 
   const start = () => {
     if (!props.instance) return
+    const usageResult = rewritesUsage
+      ? parseRequestPluginUsage(usageDraft)
+      : undefined
+    setUsageError(usageResult?.error ?? '')
+    if (usageResult?.error) return
     let body: unknown = sampleBody
     let runFormat: string = sample.format
     let reply = sampleReply
@@ -650,7 +695,7 @@ export function RequestPluginTryPanel(props: RequestPluginTryPanelProps) {
         : (REQUEST_PLUGIN_DRY_RUN_FORMATS.find(
             (item) => item.value === runFormat
           )?.model ?? SAMPLE_FORMAT.model)
-    setRun({ body, reply, instance: instanceKey })
+    setRun({ body, reply, instance: instanceKey, usage: usageKey })
     mutation.mutate({
       format: runFormat,
       path: requestPluginDryRunPath(runFormat, model),
@@ -658,6 +703,7 @@ export function RequestPluginTryPanel(props: RequestPluginTryPanelProps) {
       body,
       instance: props.instance,
       reply,
+      ...(usageResult?.usage && { usage: usageResult.usage }),
     })
   }
 
@@ -804,6 +850,16 @@ export function RequestPluginTryPanel(props: RequestPluginTryPanelProps) {
             </div>
           )}
         </div>
+      )}
+      {rewritesUsage && (
+        <RequestPluginUsageFields
+          value={usageDraft}
+          onChange={(value) => {
+            setUsageDraft(value)
+            setUsageError('')
+          }}
+          error={usageError}
+        />
       )}
       {!props.instance && (
         <p className='text-muted-foreground text-xs'>

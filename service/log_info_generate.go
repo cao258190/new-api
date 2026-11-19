@@ -85,6 +85,9 @@ func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 		if len(relayInfo.RequestPluginSteps) > 0 {
 			other.SetAdmin("request_plugins", relayInfo.RequestPluginSteps)
 		}
+		if len(relayInfo.ResponseUsageAudit) > 0 {
+			other.SetAdmin("response_usage", relayInfo.ResponseUsageAudit)
+		}
 	}
 	if common.GetContextKeyBool(ctx, constant.ContextKeyChannelIsMultiKey) {
 		other.SetAdmin("is_multi_key", true)

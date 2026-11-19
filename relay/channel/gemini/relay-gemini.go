@@ -256,6 +256,19 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			*usage = mappedUsage
 			hasBillableUsageMetadata = true
 		}
+		if info.ResponseUsageRewrite != nil && info.RelayFormat == types.RelayFormatGemini && geminiResponse.GetUsageMetadata() != nil {
+			// Keep the provider DTO and cumulative state untouched. Only the
+			// native wire copy receives the policy's checked quantities.
+			if rewritten := info.RewriteResponseUsage(usage); rewritten != usage {
+				patched, err := openai.PatchResponseUsageJSON([]byte(data), "usageMetadata", types.RelayFormatGemini, rewritten)
+				if err != nil {
+					streamErr = err
+					sr.Stop(err)
+					return
+				}
+				data = string(patched)
+			}
+		}
 
 		if !callback(data, &geminiResponse) {
 			if isGeminiDownstreamStop(c, info) {
@@ -394,7 +407,7 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 	})
 
 	if err != nil {
-		return usage, err
+		return info.RewriteResponseUsage(usage), err
 	}
 
 	response := helper.GenerateFinalUsageResponse(id, createAt, info.UpstreamModelName, *usage)
@@ -406,7 +419,7 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 	if handleErr != nil {
 		common.SysLog(common.LogText("send final response failed: %s", handleErr.Error()))
 	}
-	return usage, nil
+	return info.RewriteResponseUsage(usage), nil
 }
 
 func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -487,10 +500,21 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	case types.RelayFormatGemini:
 		break
 	}
+	finalUsage := info.RewriteResponseUsage(&usage)
+	if finalUsage != &usage {
+		path := "usage"
+		if info.RelayFormat == types.RelayFormatGemini {
+			path = "usageMetadata"
+		}
+		responseBody, err = openai.PatchResponseUsageJSON(responseBody, path, info.RelayFormat, finalUsage)
+		if err != nil {
+			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+		}
+	}
 
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
-	return &usage, nil
+	return finalUsage, nil
 }
 
 func GeminiEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {

@@ -346,6 +346,11 @@ test.each([
     { task: false, provider: false, transform: true },
   ],
   [
+    'a response usage plugin',
+    'export const meta = {key: "usage"}\nexport function usage(ctx, counts) { return {action: "continue"}; }',
+    { task: false, provider: false, transform: true },
+  ],
+  [
     'a renamed export that only looks like a hook',
     'export const meta = {key: "a"}\nconst request = () => {}\nexport { request as other }',
     { task: false, provider: false, transform: false },
