@@ -696,7 +696,10 @@ export function useCommonLogsColumns(
                 responseModel={modelInfo.responseModel}
               />
               {requestPlugins?.length ? (
-                <RequestPluginLogMarker items={requestPlugins} />
+                <RequestPluginLogMarker
+                  items={requestPlugins}
+                  isAdmin={isAdmin}
+                />
               ) : null}
             </div>
           )

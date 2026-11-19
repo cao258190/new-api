@@ -56,6 +56,7 @@ import {
   LogsFilterInput,
   LogsFilterToolbar,
 } from './logs-filter-toolbar'
+import { RequestProcessingVisibilityToggle } from './request-plugin-record'
 import { useLogsViewScope, useUsageLogsContext } from './usage-logs-provider'
 
 const route = getRouteApi('/_authenticated/usage-logs/$section')
@@ -489,7 +490,12 @@ export function CommonLogsFilterBar<TData>(
       table={props.table}
       compactMobile
       stats={statsBar}
-      actionStart={sensitiveToggle}
+      actionStart={
+        <>
+          {sensitiveToggle}
+          <RequestProcessingVisibilityToggle isAdmin={isAdmin} />
+        </>
+      }
       actionEnd={<ExportLogsDialog />}
       primaryFilters={
         <>

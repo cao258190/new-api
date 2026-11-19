@@ -17,6 +17,7 @@ import (
 	_ "github.com/QuantumNous/new-api/plugins"
 	"github.com/QuantumNous/new-api/relay"
 	"github.com/QuantumNous/new-api/relay/channel/claude"
+	"github.com/QuantumNous/new-api/relay/channel/gemini"
 	"github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
@@ -35,6 +36,78 @@ import (
 	"github.com/tidwall/gjson"
 	"gorm.io/gorm"
 )
+
+// Missing provider usage must behave identically with the policy enabled or
+// disabled, including local estimation and the bytes sent to clients.
+func TestUsageRewritePreservesMissingUpstreamUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+	for _, tc := range []struct {
+		name, path, body string
+		format           types.RelayFormat
+		stream           bool
+		handler          func(*gin.Context, *relaycommon.RelayInfo, *http.Response) (*dto.Usage, *types.NewAPIError)
+	}{
+		{name: "Chat HTTP", path: "/v1/chat/completions", format: types.RelayFormatOpenAI, body: `{"id":"r1","model":"gpt","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`, handler: func(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+			return openai.OpenaiHandler(c, info, resp)
+		}},
+		{name: "Chat SSE", path: "/v1/chat/completions", format: types.RelayFormatOpenAI, stream: true, body: "data: {\"id\":\"r1\",\"created\":1,\"model\":\"gpt\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n", handler: openai.OaiStreamHandler},
+		{name: "Responses HTTP", path: "/v1/responses", format: types.RelayFormatOpenAIResponses, body: `{"id":"r1","object":"response","model":"gpt","status":"completed","output":[]}`, handler: openai.OaiResponsesHandler},
+		{name: "Responses SSE", path: "/v1/responses", format: types.RelayFormatOpenAIResponses, stream: true, body: "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"model\":\"gpt\",\"status\":\"completed\",\"output\":[]}}\n\n", handler: openai.OaiResponsesStreamHandler},
+		{name: "Claude HTTP", path: "/v1/messages", format: types.RelayFormatClaude, body: `{"id":"r1","type":"message","role":"assistant","model":"claude","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn"}`, handler: func(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
+			return claude.ClaudeHandler(c, resp, info)
+		}},
+		{name: "Gemini HTTP", path: "/v1beta/models/gemini:generateContent", format: types.RelayFormatGemini, body: `{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP"}]}`, handler: gemini.GeminiTextGenerationHandler},
+		{name: "Gemini SSE", path: "/v1beta/models/gemini:streamGenerateContent", format: types.RelayFormatGemini, stream: true, body: "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hello\"}]},\"finishReason\":\"STOP\"}]}\n\n", handler: gemini.GeminiTextGenerationStreamHandler},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var originalUsage *dto.Usage
+			var originalBody []byte
+			for _, enabled := range []bool{false, true} {
+				instances := `[]`
+				if enabled {
+					instances = `[{"id":"rewrite","name":"Rewrite","plugin":"usage-rewrite","enabled":true,"global":true,"config":{"uncachedInputTokens":3,"outputPercent":0}}]`
+				}
+				require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{request_plugin_setting.InstancesOption: instances}))
+				t.Cleanup(func() {
+					require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{request_plugin_setting.InstancesOption: "[]"}))
+				})
+				recorder := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(recorder)
+				c.Request = httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(`{}`))
+				c.Set("group", "default")
+				common.SetContextKey(c, constant.ContextKeyOriginalModel, "gpt")
+				common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+				_, _, apiErr := requestplugin.Ingress(c, tc.format)
+				require.Nil(t, apiErr)
+				info := &relaycommon.RelayInfo{OriginModelName: "gpt", RelayFormat: tc.format, RelayMode: relayconstant.RelayModeChatCompletions, IsStream: tc.stream, ShouldIncludeUsage: true}
+				if tc.format == types.RelayFormatOpenAIResponses {
+					info.RelayMode = relayconstant.RelayModeResponses
+				}
+				finish := requestplugin.Reply(c, tc.format, info)
+				info.InitChannelMeta(c)
+				info.UpstreamModelName = "gpt"
+				info.SetEstimatePromptTokens(100)
+				require.Nil(t, requestplugin.Egress(c, info, []byte(`{}`)))
+				response := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(tc.body))}
+				usage, responseErr := tc.handler(c, info, response)
+				finish()
+				require.Nil(t, responseErr)
+				require.NotNil(t, usage)
+				if !enabled {
+					originalUsage, originalBody = usage, recorder.Body.Bytes()
+					continue
+				}
+				assert.Equal(t, originalUsage, usage)
+				assert.Equal(t, string(originalBody), recorder.Body.String())
+				assert.Nil(t, info.ResponseUsageOriginal)
+				assert.Nil(t, info.ResponseUsageAudit)
+			}
+		})
+	}
+}
 
 // Exercise the real response parser, wallet reservation, settlement and consume
 // log together. No schema, SQL, or dialect behavior is changed by the policy.
@@ -86,6 +159,8 @@ export function usage(ctx) { return {action: "continue", usage: ctx.config.patch
 		{name: "Responses stream group rule after request preparation", plugin: "usage-rewrite", config: `{"uncachedInputTokens":3,"outputPercent":50}`, responses: true, stream: true, input: 100, read: 89, write: 8, output: 1000, cost: 30278},
 		{name: "Responses passthrough channel rule after request preparation", plugin: "usage-rewrite", config: `{"uncachedInputTokens":3,"outputPercent":50}`, responses: true, stream: true, passthrough: true, bound: true, input: 100, read: 89, write: 8, output: 1000, cost: 30278},
 		{name: "Responses legacy percentage after request preparation", plugin: "usage-rewrite", config: `{"uncachedInputPercent":30,"outputPercent":50}`, responses: true, input: 100, read: 89, write: 8, output: 1000, cost: 30278},
+		{name: "Responses stream below threshold preserves original usage and charge", plugin: "usage-rewrite", config: `{"minInputTokens":101,"uncachedInputTokens":3,"outputPercent":50}`, responses: true, stream: true, input: 100, read: 89, output: 2000, cost: 60398},
+		{name: "Responses at threshold rewrites usage and charge", plugin: "usage-rewrite", config: `{"minInputTokens":100,"uncachedInputTokens":3,"outputPercent":50}`, responses: true, input: 100, read: 89, write: 8, output: 1000, cost: 30278},
 		{name: "changed input keeps real context tier", plugin: "rp-usage-accounting", config: `{"patch":{"inputTokens":50,"cacheReadTokens":39,"cacheWriteTokens":8,"outputTokens":1000}}`, input: 50, read: 39, write: 8, output: 1000, cost: 30178},
 		{name: "explicit zero fully refunds reservation", plugin: "rp-usage-accounting", config: `{"patch":{"inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0}}`},
 	} {
@@ -207,7 +282,9 @@ export function usage(ctx) { return {action: "continue", usage: ctx.config.patch
 			require.Nil(t, apiErr)
 			require.NotNil(t, usage)
 			canonical, ok := usage.BillingUsage.CanonicalUsage()
-			require.True(t, ok)
+			if !ok {
+				canonical = usage
+			}
 			assert.Equal(t, tc.input, canonical.InputTokens)
 			assert.Equal(t, tc.output, canonical.CompletionTokens)
 			assert.Equal(t, tc.read, canonical.PromptTokensDetails.CachedTokens)

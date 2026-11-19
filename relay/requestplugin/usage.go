@@ -89,6 +89,17 @@ func attachUsage(c *gin.Context, plan *Plan, format types.RelayFormat, info *rel
 		if frozen {
 			return lastRewritten
 		}
+		// Local fallback counts describe gateway estimates, not upstream facts.
+		// Keep the existing response and accounting behavior for missing usage.
+		if info.ResponseUsageEstimated || common.GetContextKeyBool(c, constant.ContextKeyLocalCountTokens) ||
+			raw.BillingUsage != nil && raw.BillingUsage.Estimated || !dto.HasOpenAIUsageTokens(raw) {
+			if lastRewritten != nil {
+				frozen = true
+				info.ResponseUsageAudit["fallback"] = "last_valid_snapshot"
+				return lastRewritten
+			}
+			return raw
+		}
 		canonical := *raw
 		if original, ok := raw.BillingUsage.CanonicalUsage(); ok {
 			canonical = *original

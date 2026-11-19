@@ -24,12 +24,24 @@ import {
 } from '@tanstack/react-table'
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterAll, afterEach, describe, expect, test, vi } from 'vitest'
+import { useState } from 'react'
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+  vi,
+} from 'vitest'
+
+import { useUsageLogsPreferencesStore } from '@/stores/usage-logs-preferences-store'
 
 import type { UsageLog } from '../../data/schema'
 import type { LogOtherData, RequestPluginRecordEntry } from '../../types'
 import { useCommonLogsColumns } from '../columns/common-logs-columns'
 import { DetailsDialog } from '../dialogs/details-dialog'
+import { RequestProcessingVisibilityToggle } from '../request-plugin-record'
 
 vi.mock('@/lib/lobe-icon', () => ({ getLobeIcon: () => null }))
 
@@ -139,7 +151,11 @@ function makeLog(logOther: LogOtherData = other): UsageLog {
 }
 
 const queryClients: QueryClient[] = []
+beforeEach(() => {
+  useUsageLogsPreferencesStore.setState({ showRequestProcessing: true })
+})
 afterEach(() => {
+  useUsageLogsPreferencesStore.setState({ showRequestProcessing: false })
   for (const queryClient of queryClients) queryClient.clear()
   queryClients.length = 0
 })
@@ -169,10 +185,10 @@ function renderDetails(isAdmin: boolean) {
   )
 }
 
-function ModelCell(props: { other?: LogOtherData }) {
+function ModelCell(props: { other?: LogOtherData; isAdmin?: boolean }) {
   const table = useReactTable({
     data: [makeLog(props.other)],
-    columns: useCommonLogsColumns(false, false),
+    columns: useCommonLogsColumns(props.isAdmin ?? true, false),
     getCoreRowModel: getCoreRowModel(),
   })
   const cell = table
@@ -183,12 +199,89 @@ function ModelCell(props: { other?: LogOtherData }) {
   return <>{flexRender(cell.column.columnDef.cell, cell.getContext())}</>
 }
 
+test('ordinary users see normal logs without processing markers or details', () => {
+  render(
+    withClient(
+      <>
+        <ModelCell isAdmin={false} />
+        <RequestProcessingVisibilityToggle isAdmin={false} />
+        <DetailsDialog
+          log={makeLog()}
+          isAdmin={false}
+          isRoot={false}
+          open
+          onOpenChange={() => undefined}
+        />
+      </>
+    )
+  )
+
+  expect(screen.queryByText('Processed')).toBeNull()
+  expect(screen.queryByText('Request redaction')).toBeNull()
+  expect(screen.queryByText('Request processing steps')).toBeNull()
+  expect(
+    screen.queryByRole('button', { name: /request processing/i })
+  ).toBeNull()
+  expect(screen.getAllByText('gpt-test').length).toBeGreaterThan(0)
+})
+
+/** Exercise the same toolbar-to-dialog navigation an administrator uses. */
+function AdminLogPreview() {
+  const [open, setOpen] = useState(false)
+  return (
+    <>
+      <RequestProcessingVisibilityToggle isAdmin />
+      <ModelCell />
+      <button type='button' onClick={() => setOpen(true)}>
+        Open log details
+      </button>
+      <DetailsDialog
+        log={makeLog()}
+        isAdmin
+        isRoot={false}
+        open={open}
+        onOpenChange={setOpen}
+      />
+    </>
+  )
+}
+
+test('admins can reveal processing diagnostics and hide them in the list and details', async () => {
+  useUsageLogsPreferencesStore.setState({ showRequestProcessing: false })
+  render(withClient(<AdminLogPreview />))
+
+  expect(screen.queryByText('Processed')).toBeNull()
+  expect(screen.queryByText('Request redaction')).toBeNull()
+  expect(screen.queryByText('Request processing steps')).toBeNull()
+  const show = screen.getByRole('button', { name: 'Show request processing' })
+  expect(show).toHaveAttribute('aria-pressed', 'false')
+  await userEvent.click(show)
+  expect(screen.getByText('Processed')).toBeVisible()
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Open log details' })
+  )
+  expect(screen.getByText('Request redaction')).toBeVisible()
+  expect(screen.getByText('Request processing steps')).toBeVisible()
+  await userEvent.click(screen.getByRole('button', { name: 'Close' }))
+  const hide = screen.getByRole('button', { name: 'Hide request processing' })
+  expect(hide).toHaveAttribute('aria-pressed', 'true')
+  await userEvent.click(hide)
+  expect(screen.queryByText('Processed')).toBeNull()
+  await userEvent.click(
+    screen.getByRole('button', { name: 'Open log details' })
+  )
+  expect(screen.queryByText('Request redaction')).toBeNull()
+  expect(screen.queryByText('Request processing steps')).toBeNull()
+})
+
 describe('request processing in the log details', () => {
   test('each plugin shows its stage, notice, changes, headers, effort, media and findings', () => {
-    renderDetails(false)
+    renderDetails(true)
 
     expect(screen.getByText('Request redaction')).toBeInTheDocument()
-    expect(screen.getByText('Before the request is read')).toBeInTheDocument()
+    expect(
+      screen.getAllByText('Before the request is read').length
+    ).toBeGreaterThan(0)
     expect(screen.getByText('Personal data was hidden.')).toBeInTheDocument()
     expect(screen.getByText('Rewrite')).toBeInTheDocument()
     expect(screen.getByText('messages[1].content')).toBeInTheDocument()
@@ -210,7 +303,7 @@ describe('request processing in the log details', () => {
   })
 
   test('a refusal reads as blocked with its code, and a cut record says how much is left out', () => {
-    renderDetails(false)
+    renderDetails(true)
 
     expect(screen.getByText('Request filter')).toBeInTheDocument()
     expect(screen.getByText('Final check')).toBeInTheDocument()
@@ -221,7 +314,7 @@ describe('request processing in the log details', () => {
   })
 
   test('a change or header the channel setting replaced stays listed, muted and marked', () => {
-    renderDetails(false)
+    renderDetails(true)
 
     const change = screen.getByText('top_p')
     expect(change).toHaveClass('text-muted-foreground')
@@ -286,7 +379,7 @@ test('a processed request is marked in the log list and the mark names its plugi
 })
 
 test('a plugin that could not read the request shows as not checked in the details', () => {
-  renderDetails(false)
+  renderDetails(true)
 
   expect(screen.getByText('Content moderation')).toBeInTheDocument()
   expect(screen.getByText('Not checked')).toBeInTheDocument()
@@ -341,7 +434,7 @@ test('reply checks show their stage, the parts they masked, a stop with its code
             },
           ],
         })}
-        isAdmin={false}
+        isAdmin
         isRoot={false}
         open
         onOpenChange={() => undefined}
@@ -380,7 +473,7 @@ test('a Realtime session shows its unchecked audio input once and a transcript s
             },
           ],
         })}
-        isAdmin={false}
+        isAdmin
         isRoot={false}
         open
         onOpenChange={() => undefined}
@@ -411,7 +504,7 @@ function renderAttachments(
             },
           ],
         })}
-        isAdmin={false}
+        isAdmin
         isRoot={false}
         open
         onOpenChange={() => undefined}

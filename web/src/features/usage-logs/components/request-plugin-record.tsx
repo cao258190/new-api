@@ -16,10 +16,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { Workflow } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { StatusBadge } from '@/components/status-badge'
+import { Button } from '@/components/ui/button'
 import {
   Tooltip,
   TooltipContent,
@@ -35,6 +37,7 @@ import { toIntlLocale } from '@/i18n/languages'
 import { formatBytes, formatNumber } from '@/lib/format'
 import { resolveLocalizedText } from '@/lib/localized-text'
 import { cn } from '@/lib/utils'
+import { useUsageLogsPreferencesStore } from '@/stores/usage-logs-preferences-store'
 
 import type {
   RequestPluginAdminStep,
@@ -490,11 +493,51 @@ export function RequestPluginAdminSteps(props: {
   )
 }
 
-/** The log list mark of a request that request processing touched. */
+/** Toggle administrator diagnostics in both the log list and its details. */
+export function RequestProcessingVisibilityToggle(props: { isAdmin: boolean }) {
+  const { t } = useTranslation()
+  const visible = useUsageLogsPreferencesStore(
+    (state) => state.showRequestProcessing
+  )
+  const setVisible = useUsageLogsPreferencesStore(
+    (state) => state.setShowRequestProcessing
+  )
+  if (!props.isAdmin) return null
+  const label = visible
+    ? t('Hide request processing')
+    : t('Show request processing')
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type='button'
+            variant={visible ? 'secondary' : 'ghost'}
+            size='icon'
+            aria-label={label}
+            aria-pressed={visible}
+            onClick={() => setVisible(!visible)}
+            className='size-7 max-sm:size-11'
+          >
+            <Workflow aria-hidden='true' />
+          </Button>
+        }
+      />
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  )
+}
+
+/** Administrator-only processing marker, controlled by the diagnostics toggle. */
 export function RequestPluginLogMarker(props: {
   items: RequestPluginRecordItem[]
+  isAdmin: boolean
 }) {
   const { t, i18n } = useTranslation()
+  const visible = useUsageLogsPreferencesStore(
+    (state) => state.showRequestProcessing
+  )
+  if (!props.isAdmin || !visible) return null
   // Reading or checking alone did nothing to the request, and neither did a
   // plugin that could not read it.
   const names = new Set(

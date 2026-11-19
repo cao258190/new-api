@@ -314,6 +314,7 @@ func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Respo
 
 	usageModified := false
 	if simpleResponse.Usage.PromptTokens == 0 {
+		info.ResponseUsageEstimated = true
 		completionTokens := simpleResponse.Usage.CompletionTokens
 		if completionTokens == 0 {
 			for _, choice := range simpleResponse.Choices {

@@ -59,6 +59,9 @@ func TestUsageRewritePlugin(t *testing.T) {
 		want   jsplugin.TokenUsage
 	}{
 		{"defaults preserve usage", `{}`, initial, initial},
+		{"below total input threshold skips every rewrite", `{"minInputTokens":101,"uncachedInputTokens":3,"outputPercent":0}`, initial, initial},
+		{"threshold includes cached input and applies at equality", `{"minInputTokens":100,"uncachedInputTokens":3,"outputPercent":50}`, initial, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 1000, CacheReadTokens: 89, CacheWriteTokens: 8}},
+		{"above threshold applies fixed retention", `{"minInputTokens":99,"uncachedInputTokens":3}`, initial, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 89, CacheWriteTokens: 8}},
 		{"fixed retention keeps three uncached", `{"uncachedInputTokens":3}`, initial, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 89, CacheWriteTokens: 8}},
 		{"fixed retention stays constant for larger inputs", `{"uncachedInputTokens":3}`, jsplugin.TokenUsage{InputTokens: 145199, OutputTokens: 328, CacheReadTokens: 145024}, jsplugin.TokenUsage{InputTokens: 145199, OutputTokens: 328, CacheReadTokens: 145024, CacheWriteTokens: 172}},
 		{"retention cannot exceed actual uncached input", `{"uncachedInputTokens":3}`, jsplugin.TokenUsage{InputTokens: 91, CacheReadTokens: 89}, jsplugin.TokenUsage{InputTokens: 91, CacheReadTokens: 89}},
@@ -83,7 +86,7 @@ func TestUsageRewritePlugin(t *testing.T) {
 			assert.Equal(t, tc.want, result.Usage)
 		})
 	}
-	for _, config := range []string{`{"uncachedInputTokens":-1}`, `{"uncachedInputTokens":2147483648}`, `{"uncachedInputTokens":0.5}`, `{"uncachedInputTokens":"3"}`, `{"uncachedInputTokens":null}`, `{"uncachedInputPercent":-1}`, `{"uncachedInputPercent":101}`, `{"uncachedInputPercent":0.5}`, `{"outputPercent":101}`, `{"cacheWriteTtl":"forever"}`} {
+	for _, config := range []string{`{"minInputTokens":-1}`, `{"minInputTokens":2147483648}`, `{"minInputTokens":0.5}`, `{"uncachedInputTokens":-1}`, `{"uncachedInputTokens":2147483648}`, `{"uncachedInputTokens":0.5}`, `{"uncachedInputTokens":"3"}`, `{"uncachedInputTokens":null}`, `{"uncachedInputPercent":-1}`, `{"uncachedInputPercent":101}`, `{"uncachedInputPercent":0.5}`, `{"outputPercent":101}`, `{"cacheWriteTtl":"forever"}`} {
 		_, err := plugin.ValidateConfig(json.RawMessage(config))
 		require.Error(t, err, config)
 	}

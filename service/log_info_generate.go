@@ -160,9 +160,9 @@ func appendParamOverrideInfo(relayInfo *relaycommon.RelayInfo, other *model.LogO
 	other.SetPublic("po", relayInfo.ParamOverrideAudit)
 }
 
-// appendRequestPluginRecord shows users what the request plugins changed in
-// their request. A retry rewrites the attempt's entries in place, so the
-// log keeps a copy.
+// appendRequestPluginRecord preserves the request change summary for operators.
+// User log projections strip it. A retry rewrites the attempt's entries in
+// place, so the log keeps a copy.
 func appendRequestPluginRecord(relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
 	if relayInfo == nil || other == nil || len(relayInfo.RequestPluginRecord) == 0 {
 		return

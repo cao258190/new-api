@@ -186,6 +186,9 @@ type RelayInfo struct {
 	ResponseUsageOriginal *dto.Usage
 	// ResponseUsageInputTokens preserves the actual context length for tiers.
 	ResponseUsageInputTokens int
+	// ResponseUsageEstimated marks local fallback counts when upstream supplied
+	// no usable accounting facts. Such counts must bypass usage rewriting.
+	ResponseUsageEstimated bool
 	// requestPluginIngressRecord counts the ingress entries of
 	// RequestPluginRecord, which every attempt keeps.
 	requestPluginIngressRecord int
@@ -313,6 +316,7 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	info.ResponseUsageAudit = nil
 	info.ResponseUsageOriginal = nil
 	info.ResponseUsageInputTokens = 0
+	info.ResponseUsageEstimated = false
 	info.RequestPluginRecord = info.RequestPluginRecord[:min(info.requestPluginIngressRecord, len(info.RequestPluginRecord))]
 	channelType := common.GetContextKeyInt(c, constant.ContextKeyChannelType)
 	paramOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelParamOverride)
