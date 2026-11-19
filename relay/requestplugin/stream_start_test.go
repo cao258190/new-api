@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -46,8 +47,39 @@ type startTransport func(*http.Request) (*http.Response, error)
 
 func (f startTransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
+// startRecorder lets delay tests inspect flushed output while the sender is
+// still waiting upstream. Fake time alone does not synchronize buffer access.
+type startRecorder struct {
+	*httptest.ResponseRecorder
+	mu sync.Mutex
+}
+
+func (r *startRecorder) Write(data []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ResponseRecorder.Write(data)
+}
+
+func (r *startRecorder) WriteString(data string) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ResponseRecorder.WriteString(data)
+}
+
+func (r *startRecorder) Flush() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ResponseRecorder.Flush()
+}
+
+func (r *startRecorder) snapshot() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.Body.String()
+}
+
 // startFixture follows the controller's ingress -> info -> reply -> egress order.
-func startFixture(t *testing.T, timing string, responses bool, extra ...string) (*gin.Context, *relaycommon.RelayInfo, *httptest.ResponseRecorder, func()) {
+func startFixture(t *testing.T, timing string, responses bool, extra ...string) (*gin.Context, *relaycommon.RelayInfo, *startRecorder, func()) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	require.NoError(t, i18n.Init())
@@ -76,7 +108,7 @@ func startFixture(t *testing.T, timing string, responses bool, extra ...string) 
 	operation_setting.GetGeneralSetting().PingIntervalEnabled = false
 	t.Cleanup(func() { operation_setting.GetGeneralSetting().PingIntervalEnabled = oldPing })
 	service.InitHttpClient()
-	rec := httptest.NewRecorder()
+	rec := &startRecorder{ResponseRecorder: httptest.NewRecorder()}
 	c, _ := gin.CreateTestContext(rec)
 	path := "/v1/chat/completions"
 	if responses {
@@ -290,7 +322,7 @@ func TestStreamStartDelayDoesNotDelayUpstreamOrPayload(t *testing.T) {
 					}()
 					<-started
 					synctest.Wait()
-					assert.Empty(t, rec.Body.String())
+					assert.Empty(t, rec.snapshot())
 					if variant == "canceled" {
 						cancel()
 					}
@@ -298,17 +330,17 @@ func TestStreamStartDelayDoesNotDelayUpstreamOrPayload(t *testing.T) {
 					if slow {
 						time.Sleep(1499 * time.Millisecond)
 						synctest.Wait()
-						assert.Empty(t, rec.Body.String())
+						assert.Empty(t, rec.snapshot())
 						time.Sleep(time.Millisecond)
 						synctest.Wait()
-						assert.Len(t, startEvents(rec.Body.String()), 1)
+						assert.Len(t, startEvents(rec.snapshot()), 1)
 						assert.Equal(t, 1500*time.Millisecond, info.ClientFirstResponseTime.Sub(startedAt))
 						assert.False(t, info.HasSendResponse(), "synthetic output leaves genuine upstream timing alone")
 					}
 					got := <-done
 					if variant == "canceled" || variant == "connection failure" {
 						require.Error(t, got.err)
-						assert.Empty(t, rec.Body.String())
+						assert.Empty(t, rec.snapshot())
 					} else {
 						require.NoError(t, got.err)
 						raw, err := io.ReadAll(got.response.Body)
@@ -318,15 +350,15 @@ func TestStreamStartDelayDoesNotDelayUpstreamOrPayload(t *testing.T) {
 						require.NoError(t, got.response.Body.Close())
 						assert.ErrorIs(t, got.response.Request.Context().Err(), context.Canceled)
 						if !slow {
-							assert.Empty(t, rec.Body.String())
+							assert.Empty(t, rec.snapshot())
 							assert.True(t, info.ClientFirstResponseTime.IsZero())
 							assert.Equal(t, 500*time.Millisecond, time.Since(startedAt))
 						}
 					}
-					before := rec.Body.String()
+					before := rec.snapshot()
 					time.Sleep(3 * time.Second)
 					synctest.Wait()
-					assert.Equal(t, before, rec.Body.String(), "no delayed writes survive request completion")
+					assert.Equal(t, before, rec.snapshot(), "no delayed writes survive request completion")
 				})
 			})
 		}
