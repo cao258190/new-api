@@ -16,6 +16,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/request_plugin_setting"
 
 	"github.com/gin-gonic/gin"
@@ -38,12 +39,17 @@ const (
 // decodes again. The plan stays on c for the later stages, the reply check
 // and the report.
 func SocketIngress(c *gin.Context, format types.RelayFormat) (bool, []relaycommon.RequestPluginStep, []relaycommon.RequestPluginRecord, *types.NewAPIError) {
+	changed, aliasErr := service.ResolveResponseAlias(c, common.GetContextKeyString(c, constant.ContextKeyOriginalModel))
+	if aliasErr != nil {
+		return false, nil, nil, aliasErr
+	}
 	plan := NewPlan()
 	if plan == nil {
-		return false, nil, nil, nil
+		return changed, nil, nil, nil
 	}
 	plan.socket = true
-	return plan.ingress(c, format, common.GetContextKeyString(c, constant.ContextKeyOriginalModel))
+	patched, steps, record, apiErr := plan.ingress(c, format, common.GetContextKeyString(c, constant.ContextKeyOriginalModel))
+	return changed || patched, steps, record, apiErr
 }
 
 // SocketResponse is the reply check and the report capture of one response

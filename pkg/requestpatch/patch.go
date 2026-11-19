@@ -28,6 +28,7 @@ const (
 	EffectReasoningSet  = "reasoning.set"
 	EffectMediaReencode = "media.reencode"
 	EffectMediaText     = "media.text"
+	EffectStreamStart   = "stream.start"
 )
 
 // Bounds on one effects list.
@@ -63,6 +64,8 @@ type Effect struct {
 	Quality int
 	MaxSide int
 	Text    string
+	// Timing schedules a stream.start event at the HTTP transport boundary.
+	Timing string
 }
 
 // Operation is one RFC 6902 operation.
@@ -109,6 +112,13 @@ func decodeEffects(data []byte, allowed ...string) ([]Effect, error) {
 			return nil, fmt.Errorf("effects[%d].type %q is not supported", index, effect.Type)
 		}
 		switch effect.Type {
+		case EffectStreamStart:
+			if err = onlyMembers(members, fmt.Sprintf("effects[%d]", index), "type", "timing"); err != nil {
+				return nil, err
+			}
+			if err = decodeString(members["timing"], &effect.Timing); err != nil || !slices.Contains([]string{"before_upstream", "after_connect"}, effect.Timing) {
+				return nil, fmt.Errorf("effects[%d].timing must be before_upstream or after_connect", index)
+			}
 		case EffectJSONPatch:
 			if err = onlyMembers(members, fmt.Sprintf("effects[%d]", index), "type", "ops"); err != nil {
 				return nil, err

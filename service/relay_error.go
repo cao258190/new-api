@@ -21,6 +21,9 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if err == nil {
 		return PolicyDecision{Action: "stop", Reason: "request_completed", Source: "system"}
 	}
+	if c.GetBool("request_plugin_stream_payload_sent") {
+		return PolicyDecision{Action: "stop", Reason: "stream_output_started", Source: "system"}
+	}
 	if ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		source := RequestPolicy(c).SessionModeSource
 		if source == "" {

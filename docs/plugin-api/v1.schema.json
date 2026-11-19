@@ -311,6 +311,7 @@
     },
     "transformEffect": {
       "oneOf": [
+        {"type": "object", "additionalProperties": false, "required": ["type", "timing"], "description": "Egress only. Schedule one native HTTP streaming start frame; after_connect means successful HTTP response headers. Task submissions reject it; other unsupported endpoints/transports leave output unchanged.", "properties": {"type": {"const": "stream.start"}, "timing": {"enum": ["before_upstream", "after_connect"]}}},
         {"type": "object", "additionalProperties": false, "required": ["type", "ops"], "description": "On a form body (req.form true), only replace operations that set an existing text field to a string.", "properties": {"type": {"const": "json.patch"}, "ops": {"type": "array", "items": {"type": "object", "required": ["op", "path"], "properties": {"op": {"enum": ["add", "remove", "replace", "move", "copy", "test"]}, "path": {"type": "string"}, "from": {"type": "string"}, "value": true}}}}},
         {"type": "object", "additionalProperties": false, "required": ["type"], "properties": {"type": {"const": "header.patch"}, "set": {"type": "object", "additionalProperties": {"type": "string"}}, "remove": {"type": "array", "items": {"type": "string"}}}},
         {"type": "object", "additionalProperties": false, "required": ["type", "effort"], "properties": {"type": {"const": "reasoning.set"}, "effort": {"enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]}, "override": {"type": "boolean"}}},
@@ -318,7 +319,7 @@
           "if": {"properties": {"format": {"const": "webp"}}}, "then": {"not": {"required": ["quality"]}}},
         {"type": "object", "additionalProperties": false, "required": ["type", "media", "text"], "description": "Replaces the text of a rewritable text file; on any other file of the call, or a text file read in part, it changes nothing.", "properties": {"type": {"const": "media.text"}, "media": {"type": "integer", "minimum": 0}, "text": {"type": "string"}}}
       ],
-      "description": "ingress: json.patch, keeping model and stream, and media.text. request: reasoning.set. outbound: json.patch (keeping the billing members), header.patch, media.reencode (webp is lossless WebP) and media.text. egress: none."
+      "description": "ingress: json.patch, keeping model and stream, and media.text. request: reasoning.set. outbound: json.patch (keeping the billing members), header.patch, media.reencode (webp is lossless WebP) and media.text. egress: stream.start only, keeping the request unchanged."
     }
   }
 }

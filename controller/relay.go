@@ -243,6 +243,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			newAPIError = relayHandler(c, relayInfo)
 		}
 		finishReply()
+		if streamErr := requestplugin.FinishStreamStart(c); streamErr != nil && newAPIError == nil {
+			newAPIError = streamErr
+		}
 
 		if newAPIError == nil {
 			service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)
@@ -277,9 +280,20 @@ func writeRelayStreamError(c *gin.Context, format types.RelayFormat, apiError *t
 		common.SetContextKey(c, constant.ContextKeyResponseStreamStatus, status)
 	}
 	status.MarkFailed(string(apiError.GetErrorCode()), string(apiError.GetErrorType()), apiError.StatusCode)
+	if requestplugin.StreamStartFailed(c, apiError) {
+		return
+	}
 	upstreamURLs := common.UpstreamAddresses(c)
 	if format == types.RelayFormatClaude {
 		_ = helper.ClaudeData(c, dto.ClaudeResponse{Type: "error", Error: apiError.ToClaudeError(upstreamURLs...)})
+		return
+	}
+	if format == types.RelayFormatOpenAIResponses {
+		err := apiError.ToOpenAIError(upstreamURLs...)
+		raw, marshalErr := common.Marshal(gin.H{"type": "error", "code": err.Code, "message": err.Message, "param": err.Param})
+		if marshalErr == nil {
+			_ = helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: "error"}, string(raw))
+		}
 		return
 	}
 	_ = helper.ObjectData(c, gin.H{"error": apiError.ToOpenAIError(upstreamURLs...)})

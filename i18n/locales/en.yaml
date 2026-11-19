@@ -43,6 +43,10 @@ relay.access_token_unsupported: "Access tokens are not supported here"
 relay.request_rejected: "Request rejected by policy"
 relay.request_plugin_failed: "A request plugin failed"
 relay.response_rejected: "Response stopped by policy"
+relay.response_unavailable: "previous_response_id is unavailable or expired"
+relay.response_storage_unavailable: "Response continuation storage is unavailable"
+relay.response_channel_conflict: "previous_response_id conflicts with the selected channel"
+relay.response_connection_required: "previous_response_id requires a new upstream connection"
 
 # Emails and the name of the token created at registration
 user.default_token_name: "{{.Username}}'s initial token"

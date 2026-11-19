@@ -1,0 +1,528 @@
+package requestplugin_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
+	appdto "github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/jsplugin"
+	"github.com/QuantumNous/new-api/pkg/requestpatch"
+	_ "github.com/QuantumNous/new-api/plugins"
+	"github.com/QuantumNous/new-api/relay/channel"
+	"github.com/QuantumNous/new-api/relay/channel/openai"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relay/helper"
+	"github.com/QuantumNous/new-api/relay/requestplugin"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/config"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/setting/request_plugin_setting"
+	"github.com/alicebob/miniredis/v2"
+	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
+	"github.com/go-redis/redis/v8"
+	"github.com/gorilla/websocket"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
+	"gorm.io/gorm"
+)
+
+type startTransport func(*http.Request) (*http.Response, error)
+
+func (f startTransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+// startFixture follows the controller's ingress -> info -> reply -> egress order.
+func startFixture(t *testing.T, timing string, responses bool, extra ...string) (*gin.Context, *relaycommon.RelayInfo, *httptest.ResponseRecorder, func()) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	require.NoError(t, i18n.Init())
+	previousRedis := common.RedisEnabled
+	common.RedisEnabled = false
+	t.Cleanup(func() { common.RedisEnabled = previousRedis })
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+	pluginConfig := `{}`
+	if timing != "" {
+		pluginConfig = fmt.Sprintf(`{"timing":%q}`, timing)
+	}
+	instances := fmt.Sprintf(`[{"id":"early","name":"首字优化","plugin":"first-token-optimization","enabled":true,"global":true,"config":%s}]`, pluginConfig)
+	if len(extra) > 0 {
+		instances = strings.TrimSuffix(instances, "]") + "," + strings.Join(extra, ",") + "]"
+	}
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{request_plugin_setting.InstancesOption: instances}))
+	t.Cleanup(func() {
+		require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{request_plugin_setting.InstancesOption: "[]"}))
+	})
+	oldPing := operation_setting.GetGeneralSetting().PingIntervalEnabled
+	operation_setting.GetGeneralSetting().PingIntervalEnabled = false
+	t.Cleanup(func() { operation_setting.GetGeneralSetting().PingIntervalEnabled = oldPing })
+	service.InitHttpClient()
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	path := "/v1/chat/completions"
+	if responses {
+		path = "/v1/responses"
+	}
+	body := `{"model":"gpt-test","stream":true,"input":"hello","messages":[{"role":"user","content":"hello"}]}`
+	c.Request = httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Set("id", 101)
+	c.Set("token_id", 202)
+	common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(c, constant.ContextKeyOriginalModel, "gpt-test")
+	common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+	common.SetContextKey(c, constant.ContextKeyChannelId, 7)
+	common.SetContextKey(c, constant.ContextKeyChannelKey, "upstream-test-credential")
+	common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, "https://upstream.test")
+	common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now().Add(-100*time.Millisecond))
+	_, _, apiErr := requestplugin.Ingress(c, types.RelayFormatOpenAI)
+	require.Nil(t, apiErr)
+	var info *relaycommon.RelayInfo
+	if responses {
+		info = relaycommon.GenRelayInfoResponses(c, &dto.OpenAIResponsesRequest{Model: "gpt-test", Stream: common.GetPointer(true)})
+	} else {
+		info = relaycommon.GenRelayInfoOpenAI(c, &dto.GeneralOpenAIRequest{Model: "gpt-test", Stream: common.GetPointer(true)})
+	}
+	finish := requestplugin.Reply(c, info.RelayFormat, info)
+	info.InitChannelMeta(c)
+	require.Nil(t, requestplugin.Egress(c, info, []byte(body)))
+	t.Cleanup(func() {
+		if stored, exists := c.Get(common.KeyBodyStorage); exists {
+			_ = stored.(common.BodyStorage).Close()
+		}
+	})
+	return c, info, rec, finish
+}
+
+func startRequest(t *testing.T, c *gin.Context, info *relaycommon.RelayInfo) (*http.Response, error) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, "https://upstream.test/v1/responses", strings.NewReader(`{}`))
+	require.NoError(t, err)
+	return channel.DoRequest(c, req, info)
+}
+
+func startEvents(body string) []gjson.Result {
+	var events []gjson.Result
+	for line := range strings.SplitSeq(body, "\n") {
+		if raw, ok := strings.CutPrefix(line, "data: "); ok && gjson.Valid(raw) {
+			events = append(events, gjson.Parse(raw))
+		}
+	}
+	return events
+}
+
+func TestStreamStartTimingAndUpstreamMeasurement(t *testing.T) {
+	for _, timing := range []string{"", "before_upstream", "after_connect"} {
+		for _, responses := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/responses=%t", timing, responses), func(t *testing.T) {
+				c, info, rec, finish := startFixture(t, timing, responses)
+				defer finish()
+				expectedTiming := timing
+				if expectedTiming == "" {
+					expectedTiming = "after_connect"
+				}
+				originalFirst := info.FirstResponseTime
+				service.GetHttpClient().Transport = startTransport(func(req *http.Request) (*http.Response, error) {
+					assert.Equal(t, expectedTiming == "before_upstream", rec.Flushed, "only before_upstream emits before Do")
+					return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+				})
+				resp, err := startRequest(t, c, info)
+				require.NoError(t, err)
+				require.NoError(t, resp.Body.Close())
+				require.True(t, rec.Flushed, "start was flushed before reading the body")
+				events := startEvents(rec.Body.String())
+				require.Len(t, events, 1)
+				if responses {
+					assert.Equal(t, "response.created", events[0].Get("type").Str)
+					assert.NotEmpty(t, events[0].Get("response.id").Str)
+					assert.Equal(t, "in_progress", events[0].Get("response.status").Str)
+				} else {
+					assert.Equal(t, "assistant", events[0].Get("choices.0.delta.role").Str)
+					assert.Empty(t, events[0].Get("choices.0.delta.content").Str)
+				}
+				assert.Equal(t, originalFirst, info.FirstResponseTime)
+				assert.False(t, info.HasSendResponse(), "synthetic frames do not mark the upstream as successful")
+				assert.Equal(t, expectedTiming, info.StreamStartTiming)
+				info.SetFirstResponseTime()
+				assert.True(t, info.HasSendResponse())
+				other := service.GenerateTextOtherInfo(c, info, 1, 1, 1, 0, 1, 0, 1).Snapshot()
+				admin := other["admin_info"].(map[string]any)["stream_start"].(map[string]any)
+				assert.Equal(t, other["frt"], float64(admin["client_first_response_ms"].(int64)))
+				assert.Equal(t, info.FirstResponseTime.Sub(info.StartTime).Milliseconds(), admin["upstream_first_response_ms"])
+			})
+		}
+	}
+}
+
+func TestStreamStartResponsesPreservePayloadAndContinuation(t *testing.T) {
+	c, info, rec, finish := startFixture(t, "before_upstream", true)
+	defer finish()
+	service.GetHttpClient().Transport = startTransport(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Request: req,
+			Body: io.NopCloser(strings.NewReader("data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_real\",\"model\":\"gpt-test\"}}\n\n" +
+				"data: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"response_id\":\"resp_real\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"weather\",\"arguments\":\"{}\"}}\n\n" +
+				"data: {\"type\":\"response.output_text.delta\",\"sequence_number\":2,\"item_id\":\"msg_1\",\"delta\":\"你好🙂\"}\n\n" +
+				"data: {\"type\":\"response.completed\",\"sequence_number\":9,\"response\":{\"id\":\"resp_real\",\"model\":\"gpt-test\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":100,\"output_tokens\":20,\"total_tokens\":120}}}\n\n"))}, nil
+	})
+	resp, err := startRequest(t, c, info)
+	require.NoError(t, err)
+	usage, apiErr := openai.OaiResponsesStreamHandler(c, info, resp)
+	require.Nil(t, apiErr)
+	require.Nil(t, requestplugin.FinishStreamStart(c))
+	assert.Equal(t, 100, usage.PromptTokens)
+	assert.Equal(t, 20, usage.CompletionTokens)
+	events := startEvents(rec.Body.String())
+	require.Len(t, events, 4)
+	id := events[0].Get("response.id").Str
+	assert.Equal(t, id, events[3].Get("response.id").Str)
+	assert.Equal(t, id, events[1].Get("response_id").Str)
+	assert.Equal(t, "fc_1", events[1].Get("item.id").Str)
+	assert.Equal(t, "call_1", events[1].Get("item.call_id").Str)
+	assert.Equal(t, "你好🙂", events[2].Get("delta").Str)
+	for i, event := range events {
+		assert.Equal(t, int64(i), event.Get("sequence_number").Int())
+	}
+	assert.Equal(t, int64(120), events[3].Get("response.usage.total_tokens").Int())
+	assert.False(t, service.ShouldRetryRelayError(c, types.NewErrorWithStatusCode(errors.New("bad gateway"), types.ErrorCodeBadResponse, 502), 2))
+
+	// Exercise the existing routing-access check with a minimal real ability.
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
+	previousDB, previousMemory, previousRedis := model.DB, common.MemoryCacheEnabled, common.RedisEnabled
+	previousDialect := common.MainDatabaseType()
+	model.DB, common.MemoryCacheEnabled, common.RedisEnabled = db, true, false
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.LogDatabaseType())
+	t.Cleanup(func() {
+		model.DB, common.MemoryCacheEnabled, common.RedisEnabled = previousDB, previousMemory, previousRedis
+		common.SetDatabaseTypes(previousDialect, common.LogDatabaseType())
+	})
+	require.NoError(t, db.AutoMigrate(&model.Ability{}, &model.Channel{}))
+	require.NoError(t, db.Create(&model.Ability{Group: "default", Model: "gpt-test", ChannelId: 7, Enabled: true}).Error)
+	require.NoError(t, db.Create(&model.Channel{Id: 7, Group: "default", Models: "gpt-test", Status: common.ChannelStatusEnabled}).Error)
+	model.InitChannelCache()
+	for _, tc := range []struct {
+		name         string
+		user, token  int
+		model, group string
+		ok           bool
+		pin          int
+		socket       bool
+	}{
+		{name: "owner", user: 101, token: 202, model: "gpt-test", group: "default", ok: true},
+		{name: "other user", user: 102, token: 202, model: "gpt-test", group: "default"},
+		{name: "other token", user: 101, token: 203, model: "gpt-test", group: "default"},
+		{name: "other model", user: 101, token: 202, model: "gpt-other", group: "default"},
+		{name: "other group", user: 101, token: 202, model: "gpt-test", group: "other"},
+		{name: "conflicting channel pin", user: 101, token: 202, model: "gpt-test", group: "default", pin: 8},
+		{name: "socket after disabling plugin", user: 101, token: 202, model: "gpt-test", group: "default", ok: true, socket: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request, _ := gin.CreateTestContext(httptest.NewRecorder())
+			request.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(fmt.Sprintf(`{"model":%q,"previous_response_id":%q}`, tc.model, id)))
+			request.Request.Header.Set("Content-Type", "application/json")
+			request.Set("id", tc.user)
+			request.Set("token_id", tc.token)
+			common.SetContextKey(request, constant.ContextKeyUsingGroup, tc.group)
+			common.SetContextKey(request, constant.ContextKeyOriginalModel, tc.model)
+			t.Cleanup(func() { common.CleanupBodyStorage(request) })
+			if tc.pin != 0 {
+				service.GetChannelConstraints(request).AddPin(appdto.ChannelPin{ChannelId: tc.pin, Source: "token", Rank: appdto.PinRankToken})
+			}
+			var changed bool
+			var aliasErr *types.NewAPIError
+			if tc.socket {
+				require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{request_plugin_setting.InstancesOption: "[]"}))
+				changed, _, _, aliasErr = requestplugin.SocketIngress(request, types.RelayFormatOpenAIResponses)
+			} else {
+				changed, aliasErr = service.ResolveResponseAlias(request, tc.model)
+			}
+			if !tc.ok {
+				require.NotNil(t, aliasErr)
+				assert.False(t, changed)
+				return
+			}
+			require.Nil(t, aliasErr)
+			assert.True(t, changed)
+			storage, err := common.GetBodyStorage(request)
+			require.NoError(t, err)
+			raw, err := storage.Bytes()
+			require.NoError(t, err)
+			assert.Equal(t, "resp_real", gjson.GetBytes(raw, "previous_response_id").Str)
+			pin, pinned, _ := service.GetChannelConstraints(request).ResolvedPin()
+			assert.True(t, pinned)
+			assert.Equal(t, 7, pin.ChannelId)
+			upstream := &model.Channel{Id: 7, Key: info.ApiKey, BaseURL: common.GetPointer(info.ChannelBaseUrl)}
+			key, _, keyErr := service.ResponseContinuationKey(request, upstream)
+			require.Nil(t, keyErr)
+			assert.Equal(t, info.ApiKey, key)
+			require.Nil(t, service.CheckResponseContinuationConnection(request, upstream, key))
+			require.NotNil(t, service.CheckResponseContinuationConnection(request, upstream, "different-account"))
+			upstream.ChannelInfo.IsMultiKey = true
+			upstream.Key = info.ApiKey + "\nother-account"
+			key, index, keyErr := service.ResponseContinuationKey(request, upstream)
+			require.Nil(t, keyErr)
+			assert.Equal(t, 0, index)
+			assert.Equal(t, info.ApiKey, key)
+			upstream.ChannelInfo.MultiKeyStatusList = map[int]int{0: common.ChannelStatusAutoDisabled}
+			_, _, keyErr = service.ResponseContinuationKey(request, upstream)
+			require.NotNil(t, keyErr)
+			upstream.ChannelInfo.IsMultiKey = false
+			upstream.Key = "rotated"
+			_, _, keyErr = service.ResponseContinuationKey(request, upstream)
+			require.NotNil(t, keyErr)
+		})
+	}
+}
+
+func TestStreamStartUsesClientProtocolAfterConversion(t *testing.T) {
+	for _, responses := range []bool{false, true} {
+		for _, upstream := range []types.RelayFormat{types.RelayFormatClaude, types.RelayFormatGemini} {
+			t.Run(fmt.Sprintf("responses=%t/upstream=%s", responses, upstream), func(t *testing.T) {
+				c, info, rec, finish := startFixture(t, "before_upstream", responses)
+				defer finish()
+				info.FinalRequestRelayFormat = upstream
+				body := `{"stream":true,"messages":[]}`
+				if upstream == types.RelayFormatGemini {
+					body = `{"contents":[]}`
+				}
+				require.Nil(t, requestplugin.Egress(c, info, []byte(body)))
+				require.NotNil(t, info.RequestPluginStreamStart)
+				helper.SetEventStreamHeaders(c)
+				require.NoError(t, info.RequestPluginStreamStart(nil))
+				events := startEvents(rec.Body.String())
+				require.Len(t, events, 1)
+				if responses {
+					assert.Equal(t, "response.created", events[0].Get("type").Str)
+				} else {
+					assert.Equal(t, "assistant", events[0].Get("choices.0.delta.role").Str)
+				}
+			})
+		}
+	}
+}
+
+func TestStreamStartRetryAndFailures(t *testing.T) {
+	for _, timing := range []string{"before_upstream", "after_connect"} {
+		t.Run(timing, func(t *testing.T) {
+			c, info, rec, finish := startFixture(t, timing, true)
+			service.GetHttpClient().Transport = startTransport(func(req *http.Request) (*http.Response, error) { return nil, errors.New("connection refused") })
+			_, err := startRequest(t, c, info)
+			require.Error(t, err)
+			if timing == "before_upstream" {
+				assert.Len(t, startEvents(rec.Body.String()), 1)
+			} else {
+				assert.Empty(t, rec.Body.String())
+			}
+			// An early start alone does not suppress a valid upstream retry.
+			assert.True(t, service.ShouldRetryRelayError(c, types.NewErrorWithStatusCode(errors.New("retry"), types.ErrorCodeBadResponse, 502), 1))
+			finish()
+			info.RetryIndex++
+			finish = requestplugin.Reply(c, info.RelayFormat, info)
+			defer finish()
+			info.InitChannelMeta(c)
+			require.Nil(t, requestplugin.Egress(c, info, []byte(`{"stream":true}`)))
+			service.GetHttpClient().Transport = startTransport(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, Header: http.Header{}, Request: req, Body: io.NopCloser(strings.NewReader(""))}, nil
+			})
+			resp, err := startRequest(t, c, info)
+			require.NoError(t, err)
+			require.NoError(t, resp.Body.Close())
+			assert.Len(t, startEvents(rec.Body.String()), 1)
+			require.True(t, requestplugin.StreamStartFailed(c, types.NewErrorWithStatusCode(errors.New("final failure"), types.ErrorCodeBadResponse, 502)))
+			events := startEvents(rec.Body.String())
+			require.Len(t, events, 2)
+			assert.Equal(t, "response.failed", events[1].Get("type").Str)
+			assert.Equal(t, events[0].Get("response.id").Str, events[1].Get("response.id").Str)
+			assert.Equal(t, int64(1), events[1].Get("sequence_number").Int())
+		})
+	}
+}
+
+func TestStreamStartExclusionsAndEffectValidation(t *testing.T) {
+	for _, raw := range []string{`[{"type":"stream.start","timing":"now"}]`, `[{"type":"stream.start"}]`, `[{"type":"stream.start","timing":"after_connect","text":"hello"}]`} {
+		_, err := requestpatch.DecodeTransformEffects([]byte(raw), requestpatch.EffectStreamStart)
+		require.Error(t, err)
+	}
+	_, err := requestpatch.DecodeEffects([]byte(`[{"type":"stream.start","timing":"after_connect"}]`))
+	require.Error(t, err, "provider plugins cannot emit client events")
+	for _, variant := range []string{"nonstream", "upstream rejection", "nonstream upstream", "canceled", "egress rejected", "non-http", "task"} {
+		t.Run(variant, func(t *testing.T) {
+			c, info, rec, finish := startFixture(t, "after_connect", false)
+			defer finish()
+			switch variant {
+			case "task":
+				body := `{"stream":true,"prompt":"image"}`
+				reader, apiErr := requestplugin.TaskEgress(c, info, strings.NewReader(body))
+				require.Nil(t, apiErr)
+				raw, err := io.ReadAll(reader)
+				require.NoError(t, err)
+				assert.Equal(t, body, string(raw))
+				assert.Empty(t, rec.Body.String())
+				return
+			case "nonstream":
+				info.IsStream = false
+				require.Nil(t, requestplugin.Egress(c, info, []byte(`{"stream":false}`)))
+			case "canceled":
+				ctx, cancel := context.WithCancel(c.Request.Context())
+				cancel()
+				c.Request = c.Request.WithContext(ctx)
+			case "non-http":
+				info.ClientWs = &websocket.Conn{}
+				require.Nil(t, requestplugin.Egress(c, info, []byte(`{"stream":true}`)))
+			case "egress rejected":
+				plugin, err := jsplugin.DefaultRegistry.Register(`export const meta={apiVersion:1,key:"reject-start",name:"Reject",version:"1.0.0",author:{name:"Test"}}; export function egress(){return {action:"reject",code:"blocked"}}`, jsplugin.Options{})
+				require.NoError(t, err)
+				t.Cleanup(func() { require.NoError(t, jsplugin.DefaultRegistry.Unregister(plugin.Meta.Key)) })
+				require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{request_plugin_setting.InstancesOption: `[{"id":"a","name":"start","plugin":"first-token-optimization","enabled":true,"global":true},{"id":"b","name":"stop","plugin":"reject-start","enabled":true,"global":true}]`}))
+				_, _, ingressErr := requestplugin.Ingress(c, info.RelayFormat)
+				require.Nil(t, ingressErr)
+				require.NotNil(t, requestplugin.Egress(c, info, []byte(`{"stream":true}`)))
+				assert.Empty(t, rec.Body.String())
+				return
+			}
+			status := 200
+			if variant == "upstream rejection" {
+				status = 429
+			}
+			service.GetHttpClient().Transport = startTransport(func(req *http.Request) (*http.Response, error) {
+				header := http.Header{}
+				if variant == "nonstream upstream" {
+					header.Set("Content-Type", "application/json")
+				}
+				return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+			})
+			resp, _ := startRequest(t, c, info)
+			if resp != nil {
+				require.NoError(t, resp.Body.Close())
+			}
+			assert.Empty(t, rec.Body.String())
+		})
+	}
+}
+
+func TestStreamStartChatKeepsContentToolsAndUsage(t *testing.T) {
+	c, info, rec, finish := startFixture(t, "before_upstream", false)
+	defer finish()
+	helper.SetEventStreamHeaders(c)
+	require.NoError(t, info.RequestPluginStreamStart(nil))
+	frames := "data: {\"id\":\"real\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"id\":\"real\",\"created\":2,\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hello\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\"}]}}]}\n\n" +
+		"data: {\"id\":\"real\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20}}\n\ndata: [DONE]\n\n"
+	for _, chunk := range []string{frames[:8], frames[8:49], frames[49:]} {
+		n, err := c.Writer.WriteString(chunk)
+		require.NoError(t, err)
+		assert.Equal(t, len(chunk), n)
+	}
+	c.Writer.Flush()
+	require.Nil(t, requestplugin.FinishStreamStart(c))
+	events := startEvents(rec.Body.String())
+	require.Len(t, events, 3)
+	assert.Equal(t, "hello", events[1].Get("choices.0.delta.content").Str)
+	assert.False(t, events[1].Get("choices.0.delta.role").Exists())
+	assert.Equal(t, "call_1", events[1].Get("choices.0.delta.tool_calls.0.id").Str)
+	assert.Equal(t, events[0].Get("id").Str, events[1].Get("id").Str)
+	assert.Equal(t, int64(100), events[2].Get("usage.prompt_tokens").Int())
+	assert.True(t, strings.HasSuffix(rec.Body.String(), "data: [DONE]\n\n"))
+}
+
+func TestStreamStartAliasExpiryAndStorageFailure(t *testing.T) {
+	c, info, rec, finish := startFixture(t, "before_upstream", true)
+	defer finish()
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr(), MaxRetries: -1})
+	oldClient, oldEnabled := common.RDB, common.RedisEnabled
+	common.RDB, common.RedisEnabled = client, true
+	t.Cleanup(func() { common.RDB, common.RedisEnabled = oldClient, oldEnabled; require.NoError(t, client.Close()) })
+	helper.SetEventStreamHeaders(c)
+	require.NoError(t, info.RequestPluginStreamStart(nil))
+	require.NoError(t, helper.StringData(c, `{"type":"response.created","response":{"id":"resp_storage"}}`))
+	id := startEvents(rec.Body.String())[0].Get("response.id").Str
+	keys := server.Keys()
+	require.Len(t, keys, 1)
+	stored, err := server.Get(keys[0])
+	require.NoError(t, err)
+	assert.NotContains(t, stored, info.ApiKey)
+	assert.Equal(t, 30*24*time.Hour, server.TTL(keys[0]))
+	server.FastForward(31 * 24 * time.Hour)
+	request, _ := gin.CreateTestContext(httptest.NewRecorder())
+	request.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(fmt.Sprintf(`{"previous_response_id":%q}`, id)))
+	request.Set("id", 101)
+	request.Set("token_id", 202)
+	_, aliasErr := service.ResolveResponseAlias(request, "gpt-test")
+	require.NotNil(t, aliasErr)
+	assert.Equal(t, 400, aliasErr.StatusCode)
+	server.SetError("ERR storage unavailable")
+	_, aliasErr = service.ResolveResponseAlias(request, "gpt-test")
+	require.NotNil(t, aliasErr)
+	assert.Equal(t, 503, aliasErr.StatusCode)
+	assert.Error(t, helper.StringData(c, `{"type":"response.completed","response":{"id":"resp_storage","status":"completed"}}`))
+	failure := requestplugin.FinishStreamStart(c)
+	require.NotNil(t, failure)
+	require.True(t, requestplugin.StreamStartFailed(c, failure))
+	events := startEvents(rec.Body.String())
+	require.Len(t, events, 2)
+	assert.Equal(t, "response.failed", events[1].Get("type").Str)
+	common.CleanupBodyStorage(request)
+}
+
+func TestStreamStartComposesWithReplyReportAndKeepAlive(t *testing.T) {
+	received := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, err := io.ReadAll(r.Body)
+		if err == nil {
+			received <- string(raw)
+		}
+		w.WriteHeader(200)
+	}))
+	t.Cleanup(server.Close)
+	plugin, err := jsplugin.DefaultRegistry.Register(`export const meta={apiVersion:1,key:"start-observer",name:"Observer",version:"1.0.0",author:{name:"Test"},configSchema:{type:"object",properties:{url:{type:"string",title:"URL",format:"url"}}}};
+export function reply(ctx,res){return {action:"continue", mask:res.outputs.filter(o=>o.text.length).map(o=>({index:o.index,start:0,end:o.text.length}))};}
+export function report(ctx,record){utils.fetch({url:ctx.config.url,method:"POST",body:JSON.stringify(record)});}`, jsplugin.Options{})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, jsplugin.DefaultRegistry.Unregister(plugin.Meta.Key)) })
+	c, info, rec, finish := startFixture(t, "before_upstream", false,
+		`{"id":"duplicate","name":"Other start","plugin":"first-token-optimization","enabled":true,"global":true,"config":{"timing":"before_upstream"}}`,
+		fmt.Sprintf(`{"id":"observer","name":"Observer","plugin":"start-observer","enabled":true,"global":true,"config":{"url":%q}}`, server.URL))
+	stopKeepAlive := helper.StartStreamKeepAlive(c, time.Hour)
+	t.Cleanup(stopKeepAlive)
+	require.NoError(t, info.RequestPluginStreamStart(nil))
+	assert.Len(t, startEvents(rec.Body.String()), 1, "duplicate instances emit one start")
+	require.NoError(t, helper.StringData(c, `{"id":"upstream","choices":[{"index":0,"delta":{"content":"secret"},"finish_reason":null}]}`))
+	require.NoError(t, helper.StringData(c, `{"id":"upstream","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`))
+	helper.Done(c)
+	finish()
+	require.Nil(t, requestplugin.FinishStreamStart(c))
+	assert.NotContains(t, rec.Body.String(), "secret")
+	assert.Contains(t, rec.Body.String(), "***")
+	requestplugin.Report(c, info.RelayFormat, info, nil, nil)
+	select {
+	case raw := <-received:
+		record := gjson.Parse(raw)
+		assert.Equal(t, int64(200), record.Get("response.status").Int())
+		events := record.Get("response.events").Array()
+		require.Len(t, events, len(startEvents(rec.Body.String())))
+		assert.Equal(t, startEvents(rec.Body.String())[0].Get("id").Str, events[0].Get("data.id").Str)
+		assert.NotContains(t, record.Get("response").Raw, "secret")
+	case <-time.After(10 * time.Second):
+		t.Fatal("report was not delivered")
+	}
+}

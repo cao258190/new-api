@@ -17,13 +17,14 @@ var expectedKeys = []string{"alibaba", "doubao", "google", "hailuo", "jimeng", "
 
 // The built-in request processing plugins and the stage hooks each exports.
 var requestPluginHooks = map[string][]string{
-	"auto-reasoning":     {"request"},
-	"content-moderation": {"ingress", "reply"},
-	"image-compress":     {"outbound"},
-	"param-override":     {"outbound"},
-	"request-filter":     {"ingress", "egress", "reply"},
-	"request-redact":     {"ingress", "egress", "reply"},
-	"usage-rewrite":      {"usage"},
+	"auto-reasoning":           {"request"},
+	"content-moderation":       {"ingress", "reply"},
+	"first-token-optimization": {"egress"},
+	"image-compress":           {"outbound"},
+	"param-override":           {"outbound"},
+	"request-filter":           {"ingress", "egress", "reply"},
+	"request-redact":           {"ingress", "egress", "reply"},
+	"usage-rewrite":            {"usage"},
 }
 
 func TestBuiltInVendorPluginsDeclareNativeRoutesAndLegacyChannelTypes(t *testing.T) {

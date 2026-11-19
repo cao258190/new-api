@@ -44,6 +44,10 @@ relay.access_token_unsupported: "暫不支援使用 access token"
 relay.request_rejected: "請求被策略拒絕"
 relay.request_plugin_failed: "請求處理插件執行失敗"
 relay.response_rejected: "回覆被策略中止"
+relay.response_unavailable: "previous_response_id 無法使用或已過期"
+relay.response_storage_unavailable: "回應續聊儲存暫時無法使用"
+relay.response_channel_conflict: "previous_response_id 與所選管道衝突"
+relay.response_connection_required: "previous_response_id 需要建立新的上游連線"
 
 # Emails and the name of the token created at registration
 user.default_token_name: "{{.Username}}的初始令牌"

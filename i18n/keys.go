@@ -52,6 +52,10 @@ const (
 	MsgRelayRequestRejected              = "relay.request_rejected"
 	MsgRelayRequestPluginFailed          = "relay.request_plugin_failed"
 	MsgRelayResponseRejected             = "relay.response_rejected"
+	MsgRelayResponseUnavailable          = "relay.response_unavailable"
+	MsgRelayResponseStorageUnavailable   = "relay.response_storage_unavailable"
+	MsgRelayResponseChannelConflict      = "relay.response_channel_conflict"
+	MsgRelayResponseConnectionRequired   = "relay.response_connection_required"
 )
 
 // Emails and the name of the token created at registration, in the

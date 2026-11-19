@@ -665,6 +665,9 @@ func (s *responsesWSSession) restoreConnectionContext(c *gin.Context, model stri
 	if !keyEnabled {
 		return types.NewErrorWithStatusCode(errors.New("the upstream connection credential is no longer enabled"), types.ErrorCodeAccessDenied, http.StatusForbidden, types.ErrOptionWithSkipRetry())
 	}
+	if apiErr := service.CheckResponseContinuationConnection(c, channel, s.lockedKey); apiErr != nil {
+		return apiErr
+	}
 	// Changes that alter the physical upstream connection require a new
 	// handshake. Request-level settings can be refreshed without rotating keys.
 	if channel.GetBaseURL() != s.lockedContext[appconstant.ContextKeyChannelBaseUrl] ||

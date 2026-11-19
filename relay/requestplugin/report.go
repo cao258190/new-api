@@ -114,6 +114,13 @@ func (p *Plan) capture(c *gin.Context, group, model string, bound []string) {
 		return
 	}
 	p.response = &responseCapture{ResponseWriter: c.Writer}
+	if p.stream != nil {
+		p.stream.writer.mu.Lock()
+		p.response.ResponseWriter = p.stream.writer.ResponseWriter
+		p.stream.writer.ResponseWriter = p.response
+		p.stream.writer.mu.Unlock()
+		return
+	}
 	c.Writer = p.response
 }
 
@@ -293,8 +300,8 @@ func Report(c *gin.Context, format types.RelayFormat, info *relaycommon.RelayInf
 			Response:       response,
 		},
 	}
-	if info != nil && info.HasSendResponse() {
-		firstResponse := info.FirstResponseTime.Sub(info.StartTime).Milliseconds()
+	if info != nil && (info.HasSendResponse() || !info.ClientFirstResponseTime.IsZero()) {
+		firstResponse := info.ClientFirstResponse().Sub(info.StartTime).Milliseconds()
 		job.record.FirstResponseMs = &firstResponse
 	}
 	if storage != nil {

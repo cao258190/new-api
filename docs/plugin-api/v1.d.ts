@@ -253,7 +253,7 @@ export interface TransformMedia {index: number; path: string; mimeType: string; 
 /** headers: outbound and egress, the headers earlier instances of the attempt set with header.patch. summary: request only; reasoningEffort is "" when the client and the model modifiers set none. form: ingress, set when body is the text fields of a multipart form body, each a string or, for a repeated field, an array of strings; its only effects are json.patch replace operations that set a field to a string, and media.text, which leaves a form file as it is. */
 export interface TransformRequest {body: JSONValue; headers?: Readonly<Record<string, string>>; media?: readonly TransformMedia[]; summary?: {messageCount: number; toolCount: number; lastUserTextLength: number; totalTextLength: number; hasImages: boolean; reasoningEffort: string}; form?: true}
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-/** ingress: json.patch, keeping model and stream, and media.text. request: reasoning.set. outbound: json.patch (keeping the billing members), header.patch, media.reencode and media.text. egress: none. */
+/** ingress: json.patch, keeping model and stream, and media.text. request: reasoning.set. outbound: json.patch (keeping the billing members), header.patch, media.reencode and media.text. egress: stream.start only; the request remains read-only. */
 export type TransformEffect =
   | RequestEffect
   | {type: "reasoning.set"; effort: ReasoningEffort; override?: boolean}
@@ -261,7 +261,9 @@ export type TransformEffect =
   | {type: "media.text"; media: number; text: string}
   | {type: "media.reencode"; media: number; format: "auto" | "jpeg" | "png"; quality?: number; maxSide?: number}
   /** Lossless WebP; it takes no quality. */
-  | {type: "media.reencode"; media: number; format: "webp"; maxSide?: number};
+  | {type: "media.reencode"; media: number; format: "webp"; maxSide?: number}
+  /** Egress only. Schedule one native start frame on HTTP streaming Chat Completions or Responses. after_connect means successful HTTP response headers. No-op for other transports/endpoints; invalid on task submissions. */
+  | {type: "stream.start"; timing: "before_upstream" | "after_connect"};
 /** What matched, by rule and count, never the matched text. rule, category and path are at most 256 characters. */
 export interface TransformFinding {rule: string; category?: string; path?: string; count: number}
 /** At most 64 findings. code matches ^[a-z0-9_.-]{1,64}$; message and ruleId are at most 256 characters. notice is shown to the user in the log as it is: at most 8 locales of at most 200 characters. */

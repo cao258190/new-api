@@ -88,6 +88,14 @@ func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 		if len(relayInfo.ResponseUsageAudit) > 0 {
 			other.SetAdmin("response_usage", relayInfo.ResponseUsageAudit)
 		}
+		if !relayInfo.ClientFirstResponseTime.IsZero() {
+			start := map[string]any{"timing": relayInfo.StreamStartTiming,
+				"client_first_response_ms": max(int64(1), relayInfo.ClientFirstResponse().Sub(relayInfo.StartTime).Milliseconds())}
+			if relayInfo.HasSendResponse() {
+				start["upstream_first_response_ms"] = relayInfo.FirstResponseTime.Sub(relayInfo.StartTime).Milliseconds()
+			}
+			other.SetAdmin("stream_start", start)
+		}
 	}
 	if common.GetContextKeyBool(ctx, constant.ContextKeyChannelIsMultiKey) {
 		other.SetAdmin("is_multi_key", true)
@@ -114,7 +122,11 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	other.SetPublic("cache_ratio", cacheRatio)
 	other.SetPublic("model_price", modelPrice)
 	other.SetPublic("user_group_ratio", userGroupRatio)
-	other.SetPublic("frt", float64(relayInfo.FirstResponseTime.UnixMilli()-relayInfo.StartTime.UnixMilli()))
+	firstResponse := relayInfo.ClientFirstResponse().Sub(relayInfo.StartTime).Milliseconds()
+	if !relayInfo.ClientFirstResponseTime.IsZero() {
+		firstResponse = max(int64(1), firstResponse)
+	}
+	other.SetPublic("frt", float64(firstResponse))
 	if relayInfo.ReasoningEffort != "" {
 		other.SetPublic("reasoning_effort", relayInfo.ReasoningEffort)
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -91,7 +92,14 @@ type RelayInfo struct {
 	TokenUnlimited    bool
 	StartTime         time.Time
 	FirstResponseTime time.Time
-	isFirstResponse   bool
+	// ClientFirstResponseTime includes a request plugin's protocol start event.
+	// FirstResponseTime remains the real upstream measurement for performance.
+	ClientFirstResponseTime time.Time
+	StreamStartTiming       string
+	// RequestPluginStreamStart runs immediately before HTTP Do (nil response),
+	// or after successful upstream headers. It never reads the response body.
+	RequestPluginStreamStart func(*http.Response) error
+	isFirstResponse          bool
 	//SendLastReasoningResponse bool
 	IsStream                    bool
 	IsGeminiBatchEmbedding      bool
@@ -312,6 +320,7 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	info.ClaudeToChatStreamState = nil
 	info.ChatToGeminiStreamState = nil
 	info.RequestPluginHeaders = nil
+	info.RequestPluginStreamStart = nil
 	info.ResponseUsageRewrite = nil
 	info.ResponseUsageAudit = nil
 	info.ResponseUsageOriginal = nil
@@ -1056,6 +1065,15 @@ func (info *RelayInfo) SetFirstResponseTime() {
 
 func (info *RelayInfo) HasSendResponse() bool {
 	return info.FirstResponseTime.After(info.StartTime)
+}
+
+// ClientFirstResponse returns the start event's timestamp when it precedes the
+// upstream frame. It does not alter upstream performance or billing signals.
+func (info *RelayInfo) ClientFirstResponse() time.Time {
+	if !info.ClientFirstResponseTime.IsZero() && (!info.HasSendResponse() || info.ClientFirstResponseTime.Before(info.FirstResponseTime)) {
+		return info.ClientFirstResponseTime
+	}
+	return info.FirstResponseTime
 }
 
 type OriginTaskRef struct {

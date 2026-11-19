@@ -136,6 +136,11 @@ func Distribute() func(c *gin.Context) {
 				}
 			}
 		}
+		if _, aliasErr := service.ResolveResponseAlias(c, modelRequest.Model); aliasErr != nil {
+			abortWithOpenAiMessage(c, aliasErr.StatusCode, aliasErr.Error())
+			return
+		}
+		_, pinned, _ = constraints.ResolvedPin()
 		if pinned || shouldSelectChannel {
 			usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
 			var selectErr *service.ChannelSelectError
@@ -170,7 +175,10 @@ func Distribute() func(c *gin.Context) {
 			}
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
-		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
+		if setupErr := SetupContextForSelectedChannel(c, channel, modelRequest.Model); setupErr != nil {
+			abortWithOpenAiMessage(c, setupErr.StatusCode, setupErr.Error())
+			return
+		}
 		c.Next()
 		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
 			service.RecordChannelAffinity(c, channel.Id)
@@ -750,7 +758,7 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, channel.GetModelMapping())
 	common.SetContextKey(c, constant.ContextKeyChannelStatusCodeMapping, channel.GetStatusCodeMapping())
 
-	key, index, newAPIError := channel.GetNextEnabledKey()
+	key, index, newAPIError := service.ResponseContinuationKey(c, channel)
 	if newAPIError != nil {
 		return newAPIError
 	}

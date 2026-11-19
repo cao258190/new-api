@@ -203,6 +203,12 @@ export interface LogOtherData {
   admin_info?: {
     request_policy?: PolicyEvent[]
     request_plugins?: RequestPluginAdminStep[]
+    /** Gateway start timing and the independently measured upstream first frame. */
+    stream_start?: {
+      timing: 'before_upstream' | 'after_connect'
+      client_first_response_ms: number
+      upstream_first_response_ms?: number
+    }
     is_multi_key?: boolean
     multi_key_index?: number
     use_channel?: number[]

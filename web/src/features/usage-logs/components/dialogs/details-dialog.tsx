@@ -983,6 +983,33 @@ export function DetailsDialog(props: DetailsDialogProps) {
           </DetailSection>
         ) : null}
 
+        {props.isAdmin && processingVisible && adminInfo?.stream_start ? (
+          <DetailSection label={t('Stream start diagnostics')}>
+            <DetailRow
+              label={t('Start event timing')}
+              value={
+                adminInfo.stream_start.timing === 'before_upstream'
+                  ? t('Before requesting upstream')
+                  : t('After upstream response headers')
+              }
+            />
+            <DetailRow
+              label={t('Gateway first event')}
+              value={formatUseTime(
+                adminInfo.stream_start.client_first_response_ms / 1000
+              )}
+            />
+            {adminInfo.stream_start.upstream_first_response_ms != null ? (
+              <DetailRow
+                label={t('Upstream first event')}
+                value={formatUseTime(
+                  adminInfo.stream_start.upstream_first_response_ms / 1000
+                )}
+              />
+            ) : null}
+          </DetailSection>
+        ) : null}
+
         {props.isRoot && other?.root_info ? (
           <DetailSection label={t('Root Diagnostics')}>
             {other.root_info.task_plugin ? (

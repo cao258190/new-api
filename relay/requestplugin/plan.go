@@ -32,13 +32,13 @@ const (
 	StageEgress   = "egress"
 )
 
-// stageEffects are the effect types each stage may return. egress is
-// read-only.
+// stageEffects are the effect types each stage may return. Egress cannot
+// change the request, but may schedule the host's stream start event.
 var stageEffects = map[string][]string{
 	StageIngress:  {requestpatch.EffectJSONPatch, requestpatch.EffectMediaText},
 	StageRequest:  {requestpatch.EffectReasoningSet},
 	StageOutbound: {requestpatch.EffectJSONPatch, requestpatch.EffectHeaderPatch, requestpatch.EffectMediaReencode, requestpatch.EffectMediaText},
-	StageEgress:   nil,
+	StageEgress:   {requestpatch.EffectStreamStart},
 }
 
 // Audit error classes besides the jsplugin.TransformError classes.
@@ -92,7 +92,8 @@ type Plan struct {
 	// submission is set on a task submission.
 	submission *submission
 	// media is the attachment text the request's hooks read.
-	media requestMedia
+	media  requestMedia
+	stream *streamStart
 }
 
 // NewPlan takes the plan of a new request: nil when no enabled instance has
@@ -288,8 +289,9 @@ type Outcome struct {
 	Headers []requestpatch.Effect
 	// Reasoning is the reasoning.set the request stage applies, the last one
 	// the client's or a modifier's effort does not keep out.
-	Reasoning *requestpatch.Effect
-	Steps     []Step
+	Reasoning   *requestpatch.Effect
+	StreamStart string
+	Steps       []Step
 	// Record is the public record of the instances that changed the request,
 	// found something or stopped it.
 	Record   []relaycommon.RequestPluginRecord
@@ -375,6 +377,9 @@ func (p *Plan) Run(ctx context.Context, call Call) Outcome {
 		if next.reasoning != nil {
 			outcome.Reasoning = next.reasoning
 		}
+		if next.streamStart != "" {
+			outcome.StreamStart = next.streamStart
+		}
 	}
 	return outcome
 }
@@ -382,13 +387,14 @@ func (p *Plan) Run(ctx context.Context, call Call) Outcome {
 // change is what one instance asked for, checked and ready to commit, with
 // its public record.
 type change struct {
-	body      []byte
-	headers   []requestpatch.Effect
-	reasoning *requestpatch.Effect
-	effects   int
-	findings  []jsplugin.TransformFinding
-	reject    *jsplugin.TransformResult
-	record    relaycommon.RequestPluginRecord
+	body        []byte
+	headers     []requestpatch.Effect
+	reasoning   *requestpatch.Effect
+	effects     int
+	findings    []jsplugin.TransformFinding
+	reject      *jsplugin.TransformResult
+	record      relaycommon.RequestPluginRecord
+	streamStart string
 }
 
 // runInstance calls one instance on body and checks its effects. The error
@@ -472,6 +478,14 @@ func (p *Plan) runInstance(ctx context.Context, call Call, instance *request_plu
 	refused := false
 	for index, effect := range effects {
 		switch effect.Type {
+		case requestpatch.EffectStreamStart:
+			if p.socket {
+				continue
+			}
+			if call.Format == string(types.RelayFormatTask) || p.submission != nil {
+				return change{}, errorInvalidEffect, fmt.Errorf("stream.start requires an HTTP text relay")
+			}
+			next.streamStart = effect.Timing
 		case requestpatch.EffectReasoningSet:
 			if effort, err := reasoning.ParseEffort(effect.Effort); err != nil || effort == "" {
 				return change{}, errorInvalidEffect, fmt.Errorf("effects[%d].effort is not a reasoning effort", index)

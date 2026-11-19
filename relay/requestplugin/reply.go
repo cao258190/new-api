@@ -86,6 +86,9 @@ func Reply(c *gin.Context, format types.RelayFormat, info *relaycommon.RelayInfo
 	if format != types.RelayFormatOpenAIRealtime {
 		plan.capture(c, group, info.OriginModelName, setting.RequestPlugins)
 	}
+	if len(plan.scope(StageEgress, group, info.OriginModelName, setting.RequestPlugins)) > 0 {
+		plan.prepareStreamStart(c, info)
+	}
 	if !plan.replies || !replyEndpoint(format, info.RelayMode, c.Request.URL.Path) {
 		return func() {}
 	}

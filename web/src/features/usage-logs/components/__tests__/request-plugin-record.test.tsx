@@ -109,6 +109,11 @@ const other: LogOtherData = {
     { truncated: 3 },
   ],
   admin_info: {
+    stream_start: {
+      timing: 'before_upstream',
+      client_first_response_ms: 50,
+      upstream_first_response_ms: 3200,
+    },
     request_plugins: [
       {
         instance: 'rp_aaaa1111',
@@ -219,6 +224,7 @@ test('ordinary users see normal logs without processing markers or details', () 
   expect(screen.queryByText('Processed')).toBeNull()
   expect(screen.queryByText('Request redaction')).toBeNull()
   expect(screen.queryByText('Request processing steps')).toBeNull()
+  expect(screen.queryByText('Stream start diagnostics')).toBeNull()
   expect(
     screen.queryByRole('button', { name: /request processing/i })
   ).toBeNull()
@@ -262,6 +268,9 @@ test('admins can reveal processing diagnostics and hide them in the list and det
   )
   expect(screen.getByText('Request redaction')).toBeVisible()
   expect(screen.getByText('Request processing steps')).toBeVisible()
+  expect(screen.getByText('Stream start diagnostics')).toBeVisible()
+  expect(screen.getByText('Before requesting upstream')).toBeVisible()
+  expect(screen.getByText('Upstream first event')).toBeVisible()
   await userEvent.click(screen.getByRole('button', { name: 'Close' }))
   const hide = screen.getByRole('button', { name: 'Hide request processing' })
   expect(hide).toHaveAttribute('aria-pressed', 'true')
@@ -272,6 +281,7 @@ test('admins can reveal processing diagnostics and hide them in the list and det
   )
   expect(screen.queryByText('Request redaction')).toBeNull()
   expect(screen.queryByText('Request processing steps')).toBeNull()
+  expect(screen.queryByText('Stream start diagnostics')).toBeNull()
 })
 
 describe('request processing in the log details', () => {
