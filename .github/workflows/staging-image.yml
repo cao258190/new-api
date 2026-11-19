@@ -15,10 +15,10 @@ concurrency:
 # Reuse local frontend and accounting checks; verify affected Go paths on Linux.
 # Production publishing remains a separate, protected registry workflow.
 env:
-  SOURCE_SHA: c962c7891a5279fa2f43681255e19e4176af8630
+  SOURCE_SHA: 380933b631e1f962c818be7c8a5b6d5322a4ee7d
   UPSTREAM_SHA: c9c6da2786b6a0912215127e78e28fbc6650c85f
-  RELEASE_VERSION: custom-v2026.11.19.6-rc.1
-  IMAGE_REF: new-api-staging:custom-v2026.11.19.6-rc.1
+  RELEASE_VERSION: custom-v2026.11.19.6-rc.2
+  IMAGE_REF: new-api-staging:custom-v2026.11.19.6-rc.2
 
 jobs:
   verify:
