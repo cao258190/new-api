@@ -290,7 +290,7 @@ type Outcome struct {
 	// Reasoning is the reasoning.set the request stage applies, the last one
 	// the client's or a modifier's effort does not keep out.
 	Reasoning   *requestpatch.Effect
-	StreamStart string
+	StreamStart *requestpatch.Effect
 	Steps       []Step
 	// Record is the public record of the instances that changed the request,
 	// found something or stopped it.
@@ -377,7 +377,7 @@ func (p *Plan) Run(ctx context.Context, call Call) Outcome {
 		if next.reasoning != nil {
 			outcome.Reasoning = next.reasoning
 		}
-		if next.streamStart != "" {
+		if next.streamStart != nil {
 			outcome.StreamStart = next.streamStart
 		}
 	}
@@ -394,7 +394,7 @@ type change struct {
 	findings    []jsplugin.TransformFinding
 	reject      *jsplugin.TransformResult
 	record      relaycommon.RequestPluginRecord
-	streamStart string
+	streamStart *requestpatch.Effect
 }
 
 // runInstance calls one instance on body and checks its effects. The error
@@ -485,7 +485,7 @@ func (p *Plan) runInstance(ctx context.Context, call Call, instance *request_plu
 			if call.Format == string(types.RelayFormatTask) || p.submission != nil {
 				return change{}, errorInvalidEffect, fmt.Errorf("stream.start requires an HTTP text relay")
 			}
-			next.streamStart = effect.Timing
+			next.streamStart = &effects[index]
 		case requestpatch.EffectReasoningSet:
 			if effort, err := reasoning.ParseEffort(effect.Effort); err != nil || effort == "" {
 				return change{}, errorInvalidEffect, fmt.Errorf("effects[%d].effort is not a reasoning effort", index)

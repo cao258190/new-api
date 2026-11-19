@@ -3916,6 +3916,7 @@
     "Minimum quota amount awarded for check-in": "Minimum quota amount awarded for check-in",
     "Minimum recharge amount in USD": "Minimum recharge amount in USD",
     "Minimum recharge amount to qualify for this discount.": "Minimum recharge amount to qualify for this discount.",
+    "Minimum start delay must not exceed maximum start delay": "Minimum start delay must not exceed maximum start delay",
     "Minimum top-up (optional)": "Minimum top-up (optional)",
     "Minimum top-up (USD)": "Minimum top-up (USD)",
     "Minimum top-up amount must be at least 1": "Minimum top-up amount must be at least 1",

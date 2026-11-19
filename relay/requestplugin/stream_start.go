@@ -2,8 +2,10 @@ package requestplugin
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/pkg/requestpatch"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -28,11 +31,48 @@ type streamStart struct {
 	info       *relaycommon.RelayInfo
 	writer     *streamStartWriter
 	timing     string
+	delay      time.Duration
+	skipped    bool
 	id         string
 	created    int64
 	sent       bool
 	sequence   int
 	upstreamID string
+}
+
+// streamStartBody restores the byte used to arbitrate the delayed start and
+// owns cancellation of the upstream request until the handler closes its body.
+type streamStartBody struct {
+	io.ReadCloser
+	first  []byte
+	err    error
+	cancel context.CancelFunc
+	ready  chan struct{}
+}
+
+func (b *streamStartBody) Read(data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, nil
+	}
+	<-b.ready
+	if len(b.first) > 0 {
+		n := copy(data, b.first)
+		b.first = b.first[n:]
+		return n, nil
+	}
+	if b.err != nil {
+		err := b.err
+		b.err = nil
+		return 0, err
+	}
+	return b.ReadCloser.Read(data)
+}
+
+func (b *streamStartBody) Close() error {
+	b.cancel()
+	err := b.ReadCloser.Close()
+	<-b.ready
+	return err
 }
 
 type streamStartWriter struct {
@@ -57,7 +97,7 @@ func (p *Plan) prepareStreamStart(c *gin.Context, info *relaycommon.RelayInfo) {
 	p.stream, c.Writer = s, s.writer
 }
 
-func (p *Plan) attachStreamStart(c *gin.Context, info *relaycommon.RelayInfo, timing string) {
+func (p *Plan) attachStreamStart(c *gin.Context, info *relaycommon.RelayInfo, effect *requestpatch.Effect) {
 	// A fresh attempt cannot inherit a policy from a channel that failed. If a
 	// start already went out, the same writer must still normalize its output.
 	info.RequestPluginStreamStart = nil
@@ -65,20 +105,149 @@ func (p *Plan) attachStreamStart(c *gin.Context, info *relaycommon.RelayInfo, ti
 		return
 	}
 	s := p.stream
-	s.info, s.timing = info, timing
+	s.info, s.timing, s.delay = info, "", 0
+	if effect != nil {
+		s.timing, s.delay = effect.Timing, time.Duration(effect.DelayMS)*time.Millisecond
+	}
 	if !c.GetBool("request_plugin_stream_payload_sent") {
 		s.upstreamID = ""
 	}
-	if timing == "" || s.sent {
+	if s.timing == "" || s.sent || s.skipped {
 		return
 	}
-	info.RequestPluginStreamStart = s.start
+	info.RequestPluginStreamStart = s.send
 }
 
-// start is called only after request building, header checks and signing. A nil
-// response means Do has not run yet; otherwise successful HTTP headers arrived.
+// send keeps all client writes on its caller's path. Only the upstream request
+// and its first body byte run concurrently with the timer, so response/reply
+// writers, headers and request completion never race a timer goroutine.
+func (s *streamStart) send(req *http.Request, send func(*http.Request) (*http.Response, error)) (*http.Response, error) {
+	if s.sent || s.skipped || s.timing != "before_upstream" || s.delay == 0 {
+		if err := s.start(nil); err != nil {
+			return nil, types.NewError(err, types.ErrorCodeBadResponse, types.ErrOptionWithSkipRetry())
+		}
+		resp, err := send(req)
+		if err == nil && resp != nil && resp.StatusCode == http.StatusOK {
+			if startErr := s.start(resp); startErr != nil {
+				_ = resp.Body.Close()
+				return nil, types.NewError(startErr, types.ErrorCodeBadResponse, types.ErrOptionWithSkipRetry())
+			}
+		}
+		return resp, err
+	}
+	type result struct {
+		response  *http.Response
+		body      *streamStartBody
+		err       error
+		streaming bool
+	}
+	ctx, cancel := context.WithCancel(req.Context())
+	results := make(chan result, 1)
+	go func(results chan<- result) {
+		var got result
+		delivered := false
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				got.err = fmt.Errorf("upstream start request panic: %v", recovered)
+				if delivered {
+					got.body.err = got.err
+				}
+			}
+			if !delivered {
+				results <- got
+			}
+			if got.body != nil {
+				close(got.body.ready)
+			}
+		}()
+		got.response, got.err = send(req.WithContext(ctx))
+		if got.err != nil || got.response == nil || got.response.Body == nil {
+			return
+		}
+		got.body = &streamStartBody{ReadCloser: got.response.Body, cancel: cancel, ready: make(chan struct{})}
+		got.response.Body = got.body
+		mediaType := strings.ToLower(strings.TrimSpace(got.response.Header.Get("Content-Type")))
+		got.streaming = got.response.StatusCode == http.StatusOK && (mediaType == "" || strings.HasPrefix(mediaType, "text/event-stream"))
+		results <- got
+		delivered = true
+		if got.streaming {
+			first := make([]byte, 1)
+			n, err := io.ReadFull(got.body.ReadCloser, first)
+			got.body.first, got.body.err = first[:n], err
+		}
+	}(results)
+	timer := time.NewTimer(s.delay)
+	defer timer.Stop()
+	timerC, done := timer.C, ctx.Done()
+	var first <-chan struct{}
+	var got result
+	var startErr error
+wait:
+	for {
+		select {
+		case got = <-results:
+			results = nil
+			if startErr != nil || got.err != nil || !got.streaming || s.sent {
+				break wait
+			}
+			first = got.body.ready
+		case <-first:
+			s.skipped = len(got.body.first) > 0
+			break wait
+		case <-done:
+			startErr = ctx.Err()
+			done = nil
+			timer.Stop()
+			timerC = nil
+			cancel()
+			if results == nil {
+				break wait
+			}
+		case <-timerC:
+			timerC = nil
+			// Give already available headers and body bytes priority at the
+			// deadline, without waiting for a slow or failing upstream.
+			select {
+			case got = <-results:
+				results = nil
+				if got.err != nil || !got.streaming {
+					break wait
+				}
+				first = got.body.ready
+			default:
+			}
+			select {
+			case <-first:
+				s.skipped = len(got.body.first) > 0
+				break wait
+			default:
+			}
+			if startErr = s.start(nil); startErr != nil {
+				cancel()
+				done = nil
+			}
+			if results == nil {
+				break wait
+			}
+		}
+	}
+	if startErr != nil || got.err != nil || got.response == nil || got.response.Body == nil {
+		cancel()
+		if got.response != nil && got.response.Body != nil {
+			_ = got.response.Body.Close()
+		}
+		if startErr != nil {
+			return nil, types.NewError(startErr, types.ErrorCodeBadResponse, types.ErrOptionWithSkipRetry())
+		}
+		return got.response, got.err
+	}
+	return got.response, nil
+}
+
+// start is called only after request checks and signing. A nil response marks
+// the before_upstream policy (immediate or delayed); otherwise HTTP headers arrived.
 func (s *streamStart) start(resp *http.Response) error {
-	if s.sent || s.timing == "" || (resp == nil) != (s.timing == "before_upstream") {
+	if s.sent || s.skipped || s.timing == "" || (resp == nil) != (s.timing == "before_upstream") {
 		return nil
 	}
 	if err := s.c.Request.Context().Err(); err != nil {

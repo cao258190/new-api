@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -58,7 +59,10 @@ func startFixture(t *testing.T, timing string, responses bool, extra ...string) 
 	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
 	pluginConfig := `{}`
 	if timing != "" {
-		pluginConfig = fmt.Sprintf(`{"timing":%q}`, timing)
+		pluginConfig = fmt.Sprintf(`{"timing":%q,"delayMinSeconds":0,"delayMaxSeconds":0}`, timing)
+		if strings.HasPrefix(timing, "{") {
+			pluginConfig = timing
+		}
 	}
 	instances := fmt.Sprintf(`[{"id":"early","name":"首字优化","plugin":"first-token-optimization","enabled":true,"global":true,"config":%s}]`, pluginConfig)
 	if len(extra) > 0 {
@@ -117,6 +121,19 @@ func startRequest(t *testing.T, c *gin.Context, info *relaycommon.RelayInfo) (*h
 	return channel.DoRequest(c, req, info)
 }
 
+// startEmptyRequest emits the configured start without a real network request.
+func startEmptyRequest(t *testing.T, c *gin.Context, info *relaycommon.RelayInfo) {
+	t.Helper()
+	previous := service.GetHttpClient().Transport
+	defer func() { service.GetHttpClient().Transport = previous }()
+	service.GetHttpClient().Transport = startTransport(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
+	})
+	resp, err := startRequest(t, c, info)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+}
+
 func startEvents(body string) []gjson.Result {
 	var events []gjson.Result
 	for line := range strings.SplitSeq(body, "\n") {
@@ -167,6 +184,188 @@ func TestStreamStartTimingAndUpstreamMeasurement(t *testing.T) {
 				assert.Equal(t, info.FirstResponseTime.Sub(info.StartTime).Milliseconds(), admin["upstream_first_response_ms"])
 			})
 		}
+	}
+}
+
+func TestStreamStartDelayConfig(t *testing.T) {
+	plugin, found := jsplugin.DefaultRegistry.GetIgnoringMasterSwitch("first-token-optimization")
+	require.True(t, found)
+	for _, tc := range []struct {
+		name, config string
+		minMS, maxMS int
+	}{
+		{"default timing stays after connection", `{}`, -1, -1},
+		{"old before-upstream config gets default jitter", `{"timing":"before_upstream"}`, 1000, 2000},
+		{"custom interval", `{"timing":"before_upstream","delayMinSeconds":0.25,"delayMaxSeconds":0.75}`, 250, 750},
+		{"fixed fractional delay", `{"timing":"before_upstream","delayMinSeconds":1.25,"delayMaxSeconds":1.25}`, 1250, 1250},
+		{"zero restores immediate emission", `{"timing":"before_upstream","delayMinSeconds":0,"delayMaxSeconds":0}`, 0, 0},
+		{"after connection ignores hidden delay", `{"timing":"after_connect","delayMinSeconds":1,"delayMaxSeconds":2}`, -1, -1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			validated, err := plugin.ValidateConfig([]byte(tc.config))
+			require.NoError(t, err)
+			result, err := plugin.CallTransform(t.Context(), jsplugin.TransformContext{
+				Stage: "egress", Format: "openai", Path: "/v1/chat/completions", Config: validated,
+			}, jsplugin.TransformRequest{Body: []byte(`{"stream":true}`)})
+			require.NoError(t, err)
+			effects, err := requestpatch.DecodeTransformEffects(result.Effects, requestpatch.EffectStreamStart)
+			require.NoError(t, err)
+			require.Len(t, effects, 1)
+			if tc.minMS < 0 {
+				assert.Equal(t, "after_connect", effects[0].Timing)
+				assert.False(t, gjson.GetBytes(result.Effects, "0.delayMs").Exists())
+				return
+			}
+			assert.Equal(t, "before_upstream", effects[0].Timing)
+			assert.GreaterOrEqual(t, effects[0].DelayMS, tc.minMS)
+			assert.LessOrEqual(t, effects[0].DelayMS, tc.maxMS)
+		})
+	}
+	for _, raw := range []string{
+		`{"delayMinSeconds":-1}`, `{"delayMaxSeconds":61}`, `{"delayMinSeconds":"1"}`,
+		`{"delayMaxSeconds":null}`, `{"delayMinSeconds":3,"delayMaxSeconds":2}`,
+	} {
+		_, err := plugin.ValidateConfig([]byte(raw))
+		require.Error(t, err, raw)
+	}
+}
+
+func TestStreamStartDelayDoesNotDelayUpstreamOrPayload(t *testing.T) {
+	for _, responses := range []bool{false, true} {
+		for _, variant := range []string{"slow headers", "slow body", "fast body", "upstream rejection", "nonstream response", "connection failure", "canceled"} {
+			t.Run(fmt.Sprintf("%s/responses=%t", variant, responses), func(t *testing.T) {
+				c, info, rec, finish := startFixture(t, `{"timing":"before_upstream","delayMinSeconds":1.5,"delayMaxSeconds":1.5}`, responses)
+				defer finish()
+				synctest.Test(t, func(t *testing.T) {
+					startedAt := time.Now()
+					ctx, cancel := context.WithCancel(c.Request.Context())
+					defer cancel()
+					c.Request = c.Request.WithContext(ctx)
+					payload := "data: {\"id\":\"real-response\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"你好\"}}]}\n\n"
+					if responses {
+						payload = "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_real_delay\"}}\n\n"
+					}
+					started := make(chan struct{})
+					service.GetHttpClient().Transport = startTransport(func(req *http.Request) (*http.Response, error) {
+						assert.Equal(t, startedAt, time.Now(), "upstream starts without waiting for the start event")
+						close(started)
+						if variant == "canceled" {
+							<-req.Context().Done()
+							return nil, req.Context().Err()
+						}
+						if variant == "slow headers" {
+							time.Sleep(5 * time.Second)
+						} else if variant != "slow body" {
+							time.Sleep(500 * time.Millisecond)
+						}
+						if variant == "connection failure" {
+							return nil, errors.New("connection refused")
+						}
+						resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Request: req, Body: io.NopCloser(strings.NewReader(payload))}
+						if variant == "upstream rejection" {
+							resp.StatusCode = http.StatusTooManyRequests
+						}
+						if variant == "nonstream response" {
+							resp.Header.Set("Content-Type", "application/json")
+						}
+						if variant == "slow body" {
+							reader, writer := io.Pipe()
+							resp.Body = reader
+							go func() {
+								time.Sleep(5 * time.Second)
+								_, _ = io.WriteString(writer, payload)
+								_ = writer.Close()
+							}()
+						}
+						return resp, nil
+					})
+					type reply struct {
+						response *http.Response
+						err      error
+					}
+					done := make(chan reply, 1)
+					go func() {
+						resp, err := startRequest(t, c, info)
+						done <- reply{resp, err}
+					}()
+					<-started
+					synctest.Wait()
+					assert.Empty(t, rec.Body.String())
+					if variant == "canceled" {
+						cancel()
+					}
+					slow := variant == "slow headers" || variant == "slow body"
+					if slow {
+						time.Sleep(1499 * time.Millisecond)
+						synctest.Wait()
+						assert.Empty(t, rec.Body.String())
+						time.Sleep(time.Millisecond)
+						synctest.Wait()
+						assert.Len(t, startEvents(rec.Body.String()), 1)
+						assert.Equal(t, 1500*time.Millisecond, info.ClientFirstResponseTime.Sub(startedAt))
+						assert.False(t, info.HasSendResponse(), "synthetic output leaves genuine upstream timing alone")
+					}
+					got := <-done
+					if variant == "canceled" || variant == "connection failure" {
+						require.Error(t, got.err)
+						assert.Empty(t, rec.Body.String())
+					} else {
+						require.NoError(t, got.err)
+						raw, err := io.ReadAll(got.response.Body)
+						require.NoError(t, err)
+						assert.Equal(t, payload, string(raw), "the prefetched byte is restored without changing the body")
+						assert.NoError(t, got.response.Request.Context().Err(), "body stays readable after the sender returns")
+						require.NoError(t, got.response.Body.Close())
+						assert.ErrorIs(t, got.response.Request.Context().Err(), context.Canceled)
+						if !slow {
+							assert.Empty(t, rec.Body.String())
+							assert.True(t, info.ClientFirstResponseTime.IsZero())
+							assert.Equal(t, 500*time.Millisecond, time.Since(startedAt))
+						}
+					}
+					before := rec.Body.String()
+					time.Sleep(3 * time.Second)
+					synctest.Wait()
+					assert.Equal(t, before, rec.Body.String(), "no delayed writes survive request completion")
+				})
+			})
+		}
+	}
+}
+
+func TestStreamStartDelayedBodyKeepsTimeoutAndCancellation(t *testing.T) {
+	for _, clientGone := range []bool{false, true} {
+		t.Run(fmt.Sprintf("clientGone=%t", clientGone), func(t *testing.T) {
+			c, info, rec, finish := startFixture(t, `{"timing":"before_upstream","delayMinSeconds":1.5,"delayMaxSeconds":1.5}`, false)
+			defer finish()
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(c.Request.Context())
+				defer cancel()
+				c.Request = c.Request.WithContext(ctx)
+				reader, writer := io.Pipe()
+				defer writer.Close()
+				service.GetHttpClient().Transport = startTransport(func(req *http.Request) (*http.Response, error) {
+					return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: reader, Request: req}, nil
+				})
+				resp, err := startRequest(t, c, info)
+				require.NoError(t, err)
+				assert.Len(t, startEvents(rec.Body.String()), 1)
+				if clientGone {
+					go func() {
+						time.Sleep(500 * time.Millisecond)
+						cancel()
+					}()
+				}
+				helper.StreamScannerHandler(c, resp, info, func(string, *helper.StreamResult) {})
+				if clientGone {
+					assert.Equal(t, relaycommon.StreamEndReasonClientGone, info.StreamStatus.EndReason)
+				} else {
+					assert.Equal(t, relaycommon.StreamEndReasonTimeout, info.StreamStatus.EndReason)
+				}
+				assert.ErrorIs(t, resp.Request.Context().Err(), context.Canceled)
+				assert.Len(t, startEvents(rec.Body.String()), 1)
+			})
+		})
 	}
 }
 
@@ -307,7 +506,7 @@ func TestStreamStartUsesClientProtocolAfterConversion(t *testing.T) {
 				require.Nil(t, requestplugin.Egress(c, info, []byte(body)))
 				require.NotNil(t, info.RequestPluginStreamStart)
 				helper.SetEventStreamHeaders(c)
-				require.NoError(t, info.RequestPluginStreamStart(nil))
+				startEmptyRequest(t, c, info)
 				events := startEvents(rec.Body.String())
 				require.Len(t, events, 1)
 				if responses {
@@ -358,7 +557,12 @@ func TestStreamStartRetryAndFailures(t *testing.T) {
 }
 
 func TestStreamStartExclusionsAndEffectValidation(t *testing.T) {
-	for _, raw := range []string{`[{"type":"stream.start","timing":"now"}]`, `[{"type":"stream.start"}]`, `[{"type":"stream.start","timing":"after_connect","text":"hello"}]`} {
+	for _, raw := range []string{
+		`[{"type":"stream.start","timing":"now"}]`, `[{"type":"stream.start"}]`, `[{"type":"stream.start","timing":"after_connect","text":"hello"}]`,
+		`[{"type":"stream.start","timing":"before_upstream","delayMs":-1}]`, `[{"type":"stream.start","timing":"before_upstream","delayMs":60001}]`,
+		`[{"type":"stream.start","timing":"before_upstream","delayMs":1.5}]`, `[{"type":"stream.start","timing":"before_upstream","delayMs":null}]`,
+		`[{"type":"stream.start","timing":"before_upstream","delayMs":"1000"}]`, `[{"type":"stream.start","timing":"after_connect","delayMs":0}]`,
+	} {
 		_, err := requestpatch.DecodeTransformEffects([]byte(raw), requestpatch.EffectStreamStart)
 		require.Error(t, err)
 	}
@@ -423,7 +627,7 @@ func TestStreamStartChatKeepsContentToolsAndUsage(t *testing.T) {
 	c, info, rec, finish := startFixture(t, "before_upstream", false)
 	defer finish()
 	helper.SetEventStreamHeaders(c)
-	require.NoError(t, info.RequestPluginStreamStart(nil))
+	startEmptyRequest(t, c, info)
 	frames := "data: {\"id\":\"real\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n" +
 		"data: {\"id\":\"real\",\"created\":2,\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hello\",\"tool_calls\":[{\"index\":0,\"id\":\"call_1\"}]}}]}\n\n" +
 		"data: {\"id\":\"real\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20}}\n\ndata: [DONE]\n\n"
@@ -453,7 +657,7 @@ func TestStreamStartAliasExpiryAndStorageFailure(t *testing.T) {
 	common.RDB, common.RedisEnabled = client, true
 	t.Cleanup(func() { common.RDB, common.RedisEnabled = oldClient, oldEnabled; require.NoError(t, client.Close()) })
 	helper.SetEventStreamHeaders(c)
-	require.NoError(t, info.RequestPluginStreamStart(nil))
+	startEmptyRequest(t, c, info)
 	require.NoError(t, helper.StringData(c, `{"type":"response.created","response":{"id":"resp_storage"}}`))
 	id := startEvents(rec.Body.String())[0].Get("response.id").Str
 	keys := server.Keys()
@@ -500,11 +704,11 @@ export function report(ctx,record){utils.fetch({url:ctx.config.url,method:"POST"
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, jsplugin.DefaultRegistry.Unregister(plugin.Meta.Key)) })
 	c, info, rec, finish := startFixture(t, "before_upstream", false,
-		`{"id":"duplicate","name":"Other start","plugin":"first-token-optimization","enabled":true,"global":true,"config":{"timing":"before_upstream"}}`,
+		`{"id":"duplicate","name":"Other start","plugin":"first-token-optimization","enabled":true,"global":true,"config":{"timing":"before_upstream","delayMinSeconds":0,"delayMaxSeconds":0}}`,
 		fmt.Sprintf(`{"id":"observer","name":"Observer","plugin":"start-observer","enabled":true,"global":true,"config":{"url":%q}}`, server.URL))
 	stopKeepAlive := helper.StartStreamKeepAlive(c, time.Hour)
 	t.Cleanup(stopKeepAlive)
-	require.NoError(t, info.RequestPluginStreamStart(nil))
+	startEmptyRequest(t, c, info)
 	assert.Len(t, startEvents(rec.Body.String()), 1, "duplicate instances emit one start")
 	require.NoError(t, helper.StringData(c, `{"id":"upstream","choices":[{"index":0,"delta":{"content":"secret"},"finish_reason":null}]}`))
 	require.NoError(t, helper.StringData(c, `{"id":"upstream","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`))

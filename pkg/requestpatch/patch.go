@@ -66,6 +66,8 @@ type Effect struct {
 	Text    string
 	// Timing schedules a stream.start event at the HTTP transport boundary.
 	Timing string
+	// DelayMS delays only a before_upstream start, never the upstream request.
+	DelayMS int
 }
 
 // Operation is one RFC 6902 operation.
@@ -113,11 +115,16 @@ func decodeEffects(data []byte, allowed ...string) ([]Effect, error) {
 		}
 		switch effect.Type {
 		case EffectStreamStart:
-			if err = onlyMembers(members, fmt.Sprintf("effects[%d]", index), "type", "timing"); err != nil {
+			if err = onlyMembers(members, fmt.Sprintf("effects[%d]", index), "type", "timing", "delayMs"); err != nil {
 				return nil, err
 			}
 			if err = decodeString(members["timing"], &effect.Timing); err != nil || !slices.Contains([]string{"before_upstream", "after_connect"}, effect.Timing) {
 				return nil, fmt.Errorf("effects[%d].timing must be before_upstream or after_connect", index)
+			}
+			if raw, ok := members["delayMs"]; ok {
+				if effect.Timing != "before_upstream" || isNull(raw) || decodeInt(raw, &effect.DelayMS) != nil || effect.DelayMS < 0 || effect.DelayMS > 60000 {
+					return nil, fmt.Errorf("effects[%d].delayMs requires before_upstream and an integer from 0 to 60000", index)
+				}
 			}
 		case EffectJSONPatch:
 			if err = onlyMembers(members, fmt.Sprintf("effects[%d]", index), "type", "ops"); err != nil {

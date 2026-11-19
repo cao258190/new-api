@@ -3916,6 +3916,7 @@
     "Minimum quota amount awarded for check-in": "Минимальная сумма квоты, присуждаемая за регистрацию",
     "Minimum recharge amount in USD": "Минимальная сумма пополнения в USD",
     "Minimum recharge amount to qualify for this discount.": "Минимальная сумма пополнения для получения этой скидки.",
+    "Minimum start delay must not exceed maximum start delay": "Минимальная задержка начала не должна превышать максимальную",
     "Minimum top-up (optional)": "Минимальное пополнение (необязательно)",
     "Minimum top-up (USD)": "Минимальное пополнение (USD)",
     "Minimum top-up amount must be at least 1": "Минимальная сумма пополнения — не менее 1",

@@ -3916,6 +3916,7 @@
     "Minimum quota amount awarded for check-in": "Số lượng hạn ngạch tối thiểu được trao cho điểm danh",
     "Minimum recharge amount in USD": "Số tiền nạp tối thiểu bằng USD",
     "Minimum recharge amount to qualify for this discount.": "Số tiền nạp tối thiểu để đủ điều kiện nhận chiết khấu này.",
+    "Minimum start delay must not exceed maximum start delay": "Độ trễ bắt đầu tối thiểu không được vượt quá tối đa",
     "Minimum top-up (optional)": "Số tiền nạp tối thiểu (tùy chọn)",
     "Minimum top-up (USD)": "Mức nạp tối thiểu (USD)",
     "Minimum top-up amount must be at least 1": "Số tiền nạp tối thiểu phải từ 1 trở lên",

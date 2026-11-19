@@ -3916,6 +3916,7 @@
     "Minimum quota amount awarded for check-in": "签到奖励的最小额度",
     "Minimum recharge amount in USD": "最低充值金额（美元）",
     "Minimum recharge amount to qualify for this discount.": "符合此折扣的最低充值金额。",
+    "Minimum start delay must not exceed maximum start delay": "提前包最小延迟不能大于最大延迟",
     "Minimum top-up (optional)": "最低充值（可选）",
     "Minimum top-up (USD)": "最低充值（美元）",
     "Minimum top-up amount must be at least 1": "最低充值金额至少为 1",

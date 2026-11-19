@@ -262,8 +262,10 @@ export type TransformEffect =
   | {type: "media.reencode"; media: number; format: "auto" | "jpeg" | "png"; quality?: number; maxSide?: number}
   /** Lossless WebP; it takes no quality. */
   | {type: "media.reencode"; media: number; format: "webp"; maxSide?: number}
-  /** Egress only. Schedule one native start frame on HTTP streaming Chat Completions or Responses. after_connect means successful HTTP response headers. No-op for other transports/endpoints; invalid on task submissions. */
-  | {type: "stream.start"; timing: "before_upstream" | "after_connect"};
+  /** Egress only. Send upstream immediately and schedule one native start frame; delayMs is an integer from 0 to 60000, default 0, and yields to the first upstream bytes. No-op for other transports/endpoints; invalid on task submissions. */
+  | {type: "stream.start"; timing: "before_upstream"; delayMs?: number}
+  /** Send after successful streaming HTTP response headers; no delay is allowed. */
+  | {type: "stream.start"; timing: "after_connect"};
 /** What matched, by rule and count, never the matched text. rule, category and path are at most 256 characters. */
 export interface TransformFinding {rule: string; category?: string; path?: string; count: number}
 /** At most 64 findings. code matches ^[a-z0-9_.-]{1,64}$; message and ruleId are at most 256 characters. notice is shown to the user in the log as it is: at most 8 locales of at most 200 characters. */

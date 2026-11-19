@@ -567,12 +567,12 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	}
 
 	common2.SetContextKey(c, appconstant.ContextKeyUpstreamRequestOrigin, req.URL.Scheme+"://"+req.URL.Host)
+	var resp *http.Response
 	if info.RequestPluginStreamStart != nil {
-		if err := info.RequestPluginStreamStart(nil); err != nil {
-			return nil, types.NewError(err, types.ErrorCodeBadResponse, types.ErrOptionWithSkipRetry())
-		}
+		resp, err = info.RequestPluginStreamStart(req, relayClient.Do)
+	} else {
+		resp, err = relayClient.Do(req)
 	}
-	resp, err := relayClient.Do(req)
 	if err != nil {
 		// A url.Error quotes the request URL, whose query may carry a
 		// credential: log its operation, the host and the cause only.
@@ -586,12 +586,6 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	}
 	if resp == nil {
 		return nil, errors.New("resp is nil")
-	}
-	if info.RequestPluginStreamStart != nil && resp.StatusCode == http.StatusOK {
-		if err := info.RequestPluginStreamStart(resp); err != nil {
-			_ = resp.Body.Close()
-			return nil, types.NewError(err, types.ErrorCodeBadResponse, types.ErrOptionWithSkipRetry())
-		}
 	}
 	if common2.DebugEnabled {
 		policy := service.NormalizeHTTPTransportPolicy(info.ChannelSetting)

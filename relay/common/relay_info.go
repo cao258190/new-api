@@ -96,9 +96,9 @@ type RelayInfo struct {
 	// FirstResponseTime remains the real upstream measurement for performance.
 	ClientFirstResponseTime time.Time
 	StreamStartTiming       string
-	// RequestPluginStreamStart runs immediately before HTTP Do (nil response),
-	// or after successful upstream headers. It never reads the response body.
-	RequestPluginStreamStart func(*http.Response) error
+	// RequestPluginStreamStart sends upstream immediately; a delayed start
+	// event yields to the first upstream bytes and never holds real content.
+	RequestPluginStreamStart func(*http.Request, func(*http.Request) (*http.Response, error)) (*http.Response, error)
 	isFirstResponse          bool
 	//SendLastReasoningResponse bool
 	IsStream                    bool
