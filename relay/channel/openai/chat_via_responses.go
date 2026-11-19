@@ -50,6 +50,17 @@ func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 	}
+	if rewritten := info.RewriteResponseUsage(usage); rewritten != usage {
+		usage = rewritten
+		path := "usage"
+		if info.RelayFormat == types.RelayFormatGemini {
+			path = "usageMetadata"
+		}
+		responseBody, err = PatchResponseUsageJSON(responseBody, path, info.RelayFormat, usage)
+		if err != nil {
+			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+		}
+	}
 
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 	return usage, nil
@@ -142,6 +153,17 @@ func OaiResponsesToChatBufferedStreamHandler(c *gin.Context, info *relaycommon.R
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 	}
+	if rewritten := info.RewriteResponseUsage(usage); rewritten != usage {
+		usage = rewritten
+		path := "usage"
+		if info.RelayFormat == types.RelayFormatGemini {
+			path = "usageMetadata"
+		}
+		responseBody, err = PatchResponseUsageJSON(responseBody, path, info.RelayFormat, usage)
+		if err != nil {
+			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+		}
+	}
 
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 	return usage, nil
@@ -217,12 +239,54 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 			return false
 		}
+		geminiResponseStr, err = RewriteResponseUsageJSON(info, geminiResponseStr, types.RelayFormatGemini)
+		if err != nil {
+			streamErr = types.NewError(err, types.ErrorCodeBadResponseBody)
+			return false
+		}
 		c.Render(-1, common.CustomEvent{Data: "data: " + string(geminiResponseStr)})
 		_ = helper.FlushWriter(c)
 		return true
 	}
 
 	sendStreamResult := func(result relayconvert.ResponseResult) bool {
+		if info.ResponseUsageRewrite != nil && info.RelayFormat != types.RelayFormatGemini {
+			switch value := result.Value.(type) {
+			case *dto.ChatCompletionsStreamResponse:
+				if value == nil || len(value.Choices) == 0 && value.Usage == nil {
+					return true
+				}
+			case dto.ChatCompletionsStreamResponse:
+				if len(value.Choices) == 0 && value.Usage == nil {
+					return true
+				}
+			case *dto.ClaudeResponse:
+				if value == nil {
+					return true
+				}
+			}
+			data, err := common.Marshal(result.Value)
+			if err == nil {
+				data, err = RewriteResponseUsageJSON(info, data, info.RelayFormat)
+			}
+			if err != nil {
+				streamErr = types.NewError(err, types.ErrorCodeBadResponseBody)
+				return false
+			}
+			if info.RelayFormat == types.RelayFormatClaude {
+				var event dto.ClaudeResponse
+				if err := common.Unmarshal(data, &event); err != nil {
+					streamErr = types.NewError(err, types.ErrorCodeBadResponseBody)
+					return false
+				}
+				helper.ClaudeChunkData(c, event, string(data))
+				return true
+			}
+			if err := helper.StringData(c, string(data)); err != nil {
+				return writeFailed(err)
+			}
+			return true
+		}
 		switch value := result.Value.(type) {
 		case dto.ChatCompletionsStreamResponse:
 			if len(value.Choices) == 0 && value.Usage == nil {
@@ -373,7 +437,7 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		}
 	}
 	if info.RelayFormat == types.RelayFormatOpenAI && info.ShouldIncludeUsage && usage != nil {
-		if err := helper.ObjectData(c, helper.GenerateFinalUsageResponse(responseId, createAt, info.UpstreamModelName, *usage)); err != nil {
+		if err := helper.ObjectData(c, helper.GenerateFinalUsageResponse(responseId, createAt, info.UpstreamModelName, *info.RewriteResponseUsage(usage))); err != nil {
 			writeFailed(err)
 			if streamErr != nil {
 				return nil, streamErr
@@ -385,5 +449,5 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 	if info.RelayFormat == types.RelayFormatOpenAI {
 		helper.Done(c)
 	}
-	return usage, nil
+	return info.RewriteResponseUsage(usage), nil
 }

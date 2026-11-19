@@ -404,8 +404,14 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		extraContent = append(extraContent, common.NewMessage("Upstream returned no usage"))
 	}
 	if originUsage != nil {
-		ObserveChannelAffinityUsageCacheByRelayFormat(ctx, billingUsage, relayInfo.GetFinalRequestRelayFormat())
+		observedUsage := billingUsage
+		if relayInfo.ResponseUsageOriginal != nil {
+			observedUsage = relayInfo.ResponseUsageOriginal
+		}
+		ObserveChannelAffinityUsageCacheByRelayFormat(ctx, observedUsage, relayInfo.GetFinalRequestRelayFormat())
 	}
+	usage = relayInfo.RewriteResponseUsage(usage)
+	billingUsage = effectiveBillingUsage(usage)
 
 	adminRejectReason := common.GetContextKeyString(ctx, constant.ContextKeyAdminRejectReason)
 	summary := calculateTextQuotaSummary(ctx, relayInfo, billingUsage)
@@ -429,6 +435,9 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 			tieredUsedVars = billingexpr.UsedVarsByHash(snap.ExprString, snap.ExprHash)
 		}
 		tieredTokens = BuildTieredTokenParams(billingUsage, summary.IsClaudeUsageSemantic, tieredUsedVars)
+		if relayInfo.ResponseUsageOriginal != nil {
+			tieredTokens.Len = float64(relayInfo.ResponseUsageInputTokens)
+		}
 		tieredOk, tieredQuota, tieredRes := TryTieredSettle(relayInfo, tieredTokens)
 		if tieredOk {
 			tieredBillingApplied = true

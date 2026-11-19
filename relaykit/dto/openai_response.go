@@ -233,6 +233,10 @@ type Usage struct {
 	UsageSemantic        string        `json:"usage_semantic,omitempty"`
 	UsageSource          string        `json:"usage_source,omitempty"`
 	BillingUsage         *BillingUsage `json:"billing_usage,omitempty"`
+	// ResponseUsageRewritten prevents applying the same host policy again
+	// while this response passes through protocol converters. It is local to
+	// this gateway; a downstream gateway applies its own policy.
+	ResponseUsageRewritten bool `json:"-"`
 
 	PromptTokensDetails    InputTokenDetails   `json:"prompt_tokens_details"`
 	CompletionTokenDetails OutputTokenDetails  `json:"completion_tokens_details"`

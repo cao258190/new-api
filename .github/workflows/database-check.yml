@@ -59,7 +59,7 @@ jobs:
             relaykit/go.sum
             tokenkit/go.sum
 
-      - name: Prepare latest released baseline
+      - name: Prepare upstream and custom released baselines
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -70,8 +70,14 @@ jobs:
           echo "Released baseline: $release ($release_sha)"
           mkdir -p "$RUNNER_TEMP/database-release"
           git archive "$release_sha" | tar -x -C "$RUNNER_TEMP/database-release"
+          custom_release=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
+          [[ "$custom_release" =~ ^custom-v[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$ ]]
+          custom_sha=$(git rev-parse "refs/tags/$custom_release^{commit}")
+          echo "Custom released baseline: $custom_release ($custom_sha)"
+          mkdir -p "$RUNNER_TEMP/database-custom-release"
+          git archive "$custom_sha" | tar -x -C "$RUNNER_TEMP/database-custom-release"
 
       - name: Check real databases, released upgrades, and restart idempotency
         env:
           TEST_DATABASE_RUN_ID: ci${{ github.run_id }}x${{ github.run_attempt }}
-        run: sh .github/scripts/check-databases.sh "$RUNNER_TEMP/database-release"
+        run: sh .github/scripts/check-databases.sh "$RUNNER_TEMP/database-release" "$RUNNER_TEMP/database-custom-release"

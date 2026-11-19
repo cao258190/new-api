@@ -1,12 +1,14 @@
 package openai
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -18,6 +20,155 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestResponseUsageRewriteMatchesAllOpenAIClientProtocols(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+	chatUsage := `{"prompt_tokens":100,"completion_tokens":2000,"total_tokens":2100,"prompt_tokens_details":{"cached_tokens":89},"vendor_tokens":17}`
+	responsesUsage := `{"input_tokens":100,"output_tokens":2000,"total_tokens":2100,"input_tokens_details":{"cached_tokens":89},"vendor_tokens":17}`
+	for _, source := range []string{"chat", "responses"} {
+		for _, format := range []types.RelayFormat{types.RelayFormatOpenAI, types.RelayFormatOpenAIResponses, types.RelayFormatClaude, types.RelayFormatGemini} {
+			for _, stream := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/stream=%t", source, format, stream), func(t *testing.T) {
+					body := `{"id":"chat_1","model":"gpt-test","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":` + chatUsage + `,"vendor_field":"retained"}`
+					if source == "responses" {
+						body = `{"id":"resp_1","object":"response","model":"gpt-test","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}],"usage":` + responsesUsage + `,"vendor_field":"retained"}`
+					}
+					if stream {
+						if source == "chat" {
+							body = "data: " + `{"id":"chat_1","model":"gpt-test","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"}}],"usage":{"prompt_tokens":100,"completion_tokens":1,"total_tokens":101,"prompt_tokens_details":{"cached_tokens":89}}}` + "\n\n" +
+								"data: " + `{"id":"chat_1","model":"gpt-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":` + chatUsage + `}` + "\n\ndata: [DONE]\n\n"
+						} else {
+							body = "data: " + `{"type":"response.created","response":{"id":"resp_1","model":"gpt-test","status":"in_progress","usage":{"input_tokens":100,"output_tokens":0,"total_tokens":100,"input_tokens_details":{"cached_tokens":89}}}}` + "\n\n" +
+								"data: " + `{"type":"response.output_text.delta","delta":"hello"}` + "\n\n" +
+								"data: " + `{"type":"response.completed","response":` + body + `}` + "\n\ndata: [DONE]\n\n"
+						}
+					}
+					c, recorder, resp, info := newResponsesChatTestContext(t, body, stream)
+					info.RelayFormat = format
+					info.SetEstimatePromptTokens(100)
+					var rawWrites []int
+					info.ResponseUsageRewrite = func(raw *dto.Usage) *dto.Usage {
+						original := raw
+						if canonical, ok := raw.BillingUsage.CanonicalUsage(); ok {
+							original = canonical
+						}
+						rawWrites = append(rawWrites, original.PromptTokensDetails.CacheCreationTokensTotal())
+						adjusted := *original
+						adjusted.PromptTokensDetails = original.PromptTokensDetails.Clone()
+						adjusted.InputTokens, adjusted.PromptTokens = 100, 100
+						adjusted.OutputTokens, adjusted.CompletionTokens = 0, 0
+						adjusted.TotalTokens = 100
+						adjusted.PromptTokensDetails.CachedTokens = 89
+						adjusted.PromptTokensDetails.CacheWriteTokens = original.PromptTokensDetails.CacheCreationTokensTotal() + 7
+						adjusted.ResponseUsageRewritten = true
+						adjusted.BillingUsage = dto.NewCanonicalBillingUsage(&adjusted)
+						return &adjusted
+					}
+					var usage *dto.Usage
+					var apiErr *types.NewAPIError
+					if source == "chat" {
+						if format == types.RelayFormatOpenAIResponses {
+							if stream {
+								usage, apiErr = OaiChatToResponsesStreamHandler(c, info, resp)
+							} else {
+								usage, apiErr = OaiChatToResponsesHandler(c, info, resp)
+							}
+						} else if stream {
+							usage, apiErr = OaiStreamHandler(c, info, resp)
+						} else {
+							usage, apiErr = OpenaiHandler(c, info, resp)
+						}
+					} else if format == types.RelayFormatOpenAIResponses {
+						if stream {
+							usage, apiErr = OaiResponsesStreamHandler(c, info, resp)
+						} else {
+							usage, apiErr = OaiResponsesHandler(c, info, resp)
+						}
+					} else if stream {
+						usage, apiErr = OaiResponsesToChatStreamHandler(c, info, resp)
+					} else {
+						usage, apiErr = OaiResponsesToChatHandler(c, info, resp)
+					}
+					require.Nil(t, apiErr)
+					require.NotNil(t, usage)
+					assert.Zero(t, usage.CompletionTokens, "an explicit rewritten zero must not be estimated again")
+					assert.Equal(t, 7, usage.PromptTokensDetails.CacheCreationTokensTotal())
+					require.NotEmpty(t, rawWrites)
+					for _, writes := range rawWrites {
+						assert.Zero(t, writes, "the policy must only receive original cumulative snapshots")
+					}
+					var visible ojson.Result
+					for line := range strings.SplitSeq(recorder.Body.String(), "\n") {
+						line = strings.TrimPrefix(line, "data: ")
+						for _, path := range []string{"usage", "response.usage", "message.usage", "usageMetadata"} {
+							if candidate := ojson.Get(line, path); candidate.IsObject() {
+								visible = candidate
+							}
+						}
+					}
+					require.True(t, visible.IsObject(), recorder.Body.String())
+					inputPath, outputPath, readPath, writePath := "prompt_tokens", "completion_tokens", "prompt_tokens_details.cached_tokens", "prompt_tokens_details.cache_write_tokens"
+					wantInput := int64(100)
+					switch format {
+					case types.RelayFormatOpenAIResponses:
+						inputPath, outputPath, readPath, writePath = "input_tokens", "output_tokens", "input_tokens_details.cached_tokens", "input_tokens_details.cache_write_tokens"
+					case types.RelayFormatClaude:
+						inputPath, outputPath, readPath, writePath = "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"
+						wantInput = 4
+					case types.RelayFormatGemini:
+						inputPath, outputPath, readPath, writePath = "promptTokenCount", "candidatesTokenCount", "cachedContentTokenCount", "cacheWriteTokenCount"
+					}
+					assert.Equal(t, wantInput, visible.Get(inputPath).Int())
+					assert.Zero(t, visible.Get(outputPath).Int())
+					assert.Equal(t, int64(89), visible.Get(readPath).Int())
+					assert.Equal(t, int64(7), visible.Get(writePath).Int())
+					var billing dto.BillingUsage
+					require.NoError(t, common.UnmarshalJsonStr(visible.Get("billing_usage").Raw, &billing))
+					canonical, ok := billing.CanonicalUsage()
+					require.True(t, ok)
+					assert.Zero(t, canonical.CompletionTokens)
+					assert.Equal(t, 7, canonical.PromptTokensDetails.CacheCreationTokensTotal())
+					if !stream && (source == "chat" && format == types.RelayFormatOpenAI || source == "responses" && format == types.RelayFormatOpenAIResponses) {
+						assert.Equal(t, "retained", ojson.Get(recorder.Body.String(), "vendor_field").Str)
+						assert.Equal(t, int64(17), visible.Get("vendor_tokens").Int())
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestResponseUsageRewriteKeepsExistingTextDetailsConsistent(t *testing.T) {
+	usage := &dto.Usage{PromptTokens: 60, InputTokens: 60, CompletionTokens: 10, OutputTokens: 10, TotalTokens: 70,
+		UsageSemantic: dto.BillingUsageSemanticOpenAI, ResponseUsageRewritten: true,
+		PromptTokensDetails:    dto.InputTokenDetails{CachedTokens: 20, CacheWriteTokens: 7, TextTokens: 60},
+		CompletionTokenDetails: dto.OutputTokenDetails{ReasoningTokens: 3, TextTokens: 7}}
+	usage.BillingUsage = dto.NewCanonicalBillingUsage(usage)
+	for _, tc := range []struct {
+		format     types.RelayFormat
+		path, body string
+		want       map[string]int64
+	}{
+		{types.RelayFormatOpenAI, "usage", `{"usage":{"prompt_tokens":100,"completion_tokens":2000,"cached_tokens":89,"prompt_tokens_details":{"text_tokens":100,"cached_tokens_details":{"text_tokens":89},"vendor_field":"retained"},"completion_tokens_details":{"reasoning_tokens":500,"text_tokens":1500}}}`,
+			map[string]int64{"prompt_tokens": 60, "completion_tokens": 10, "cached_tokens": 20, "prompt_tokens_details.text_tokens": 60, "prompt_tokens_details.cached_tokens_details.text_tokens": 20, "completion_tokens_details.reasoning_tokens": 3, "completion_tokens_details.text_tokens": 7}},
+		{types.RelayFormatOpenAIResponses, "usage", `{"usage":{"input_tokens":100,"output_tokens":2000,"input_tokens_details":{"text_tokens":100,"cached_tokens_details":{"text_tokens":89},"vendor_field":"retained"},"output_tokens_details":{"reasoning_tokens":500,"text_tokens":1500}}}`,
+			map[string]int64{"input_tokens": 60, "output_tokens": 10, "input_tokens_details.text_tokens": 60, "input_tokens_details.cached_tokens_details.text_tokens": 20, "output_tokens_details.reasoning_tokens": 3, "output_tokens_details.text_tokens": 7}},
+		{types.RelayFormatGemini, "usageMetadata", `{"usageMetadata":{"promptTokenCount":90,"toolUsePromptTokenCount":10,"candidatesTokenCount":1500,"thoughtsTokenCount":500,"promptTokensDetails":[{"modality":"TEXT","tokenCount":90,"vendor_field":"retained"}],"toolUsePromptTokensDetails":[{"modality":"TEXT","tokenCount":10}],"candidatesTokensDetails":[{"modality":"TEXT","tokenCount":1500}],"cacheTokensDetails":[{"modality":"TEXT","tokenCount":89}]}}`,
+			map[string]int64{"promptTokenCount": 50, "toolUsePromptTokenCount": 10, "candidatesTokenCount": 7, "thoughtsTokenCount": 3, "totalTokenCount": 70, "promptTokensDetails.0.tokenCount": 50, "toolUsePromptTokensDetails.0.tokenCount": 10, "candidatesTokensDetails.0.tokenCount": 7, "cacheTokensDetails.0.tokenCount": 20}},
+	} {
+		t.Run(string(tc.format), func(t *testing.T) {
+			body, err := PatchResponseUsageJSON([]byte(tc.body), tc.path, tc.format, usage)
+			require.NoError(t, err)
+			for path, want := range tc.want {
+				assert.Equal(t, want, ojson.GetBytes(body, tc.path+"."+path).Int(), path)
+			}
+			assert.Contains(t, string(body), `"vendor_field":"retained"`)
+		})
+	}
+}
 
 func newResponsesChatTestContext(t *testing.T, body string, isStream bool) (*gin.Context, *httptest.ResponseRecorder, *http.Response, *relaycommon.RelayInfo) {
 	t.Helper()

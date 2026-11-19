@@ -35,10 +35,14 @@ func TestFormatUserLogsStripsQuotaSaturation(t *testing.T) {
 	require.Contains(t, parsed, "model_price")
 }
 
-func TestTaskPluginLogVisibilityIsRoleSeparated(t *testing.T) {
+func TestPluginLogVisibilityIsRoleSeparated(t *testing.T) {
 	other := common.MapToJsonStr(map[string]any{
-		"model_price": 1.25,
+		"model_price":        1.25,
+		"cache_write_tokens": 8,
+		"request_plugins":    []map[string]any{{"plugin": "usage-rewrite", "stage": "usage"}},
 		"admin_info": map[string]any{
+			"request_plugins": []map[string]any{{"plugin": "usage-rewrite", "stage": "usage", "action": "continue"}},
+			"response_usage":  map[string]any{"before": 11, "after": 3},
 			"task_plugin": map[string]any{
 				"key":     "document-parser",
 				"name":    "Document Parser",
@@ -62,6 +66,8 @@ func TestTaskPluginLogVisibilityIsRoleSeparated(t *testing.T) {
 		assert.NotContains(t, parsed, "admin_info")
 		assert.NotContains(t, parsed, "root_info")
 		assert.Equal(t, 1.25, parsed["model_price"])
+		assert.NotContains(t, parsed, "request_plugins")
+		assert.EqualValues(t, 8, parsed["cache_write_tokens"])
 	})
 
 	t.Run("admin", func(t *testing.T) {
@@ -72,6 +78,10 @@ func TestTaskPluginLogVisibilityIsRoleSeparated(t *testing.T) {
 		require.NoError(t, err)
 		assert.Contains(t, parsed, "admin_info")
 		assert.NotContains(t, parsed, "root_info")
+		assert.Contains(t, parsed, "request_plugins")
+		adminInfo := parsed["admin_info"].(map[string]any)
+		assert.Contains(t, adminInfo, "response_usage")
+		assert.Contains(t, adminInfo, "request_plugins")
 	})
 
 	t.Run("root", func(t *testing.T) {

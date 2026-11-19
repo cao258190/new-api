@@ -2,11 +2,13 @@ package claude
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -19,6 +21,120 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestClaudeResponseUsageRewriteMatchesClientAndSettlement(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+	for _, format := range []types.RelayFormat{types.RelayFormatClaude, types.RelayFormatOpenAI, types.RelayFormatOpenAIResponses, types.RelayFormatGemini} {
+		for _, mode := range []string{"json", "stream", "stream_missing_output"} {
+			t.Run(fmt.Sprintf("%s/%s", format, mode), func(t *testing.T) {
+				stream := mode != "json"
+				body := `{"id":"msg_1","type":"message","model":"claude-test","role":"assistant","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":11,"output_tokens":2000,"cache_read_input_tokens":89,"vendor_tokens":17},"vendor_field":"retained"}`
+				if stream {
+					body = "data: " + `{"type":"message_start","message":{"id":"msg_1","model":"claude-test","role":"assistant","content":[],"usage":{"input_tokens":11,"output_tokens":0,"cache_read_input_tokens":89}}}` + "\n\n" +
+						"data: " + `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}` + "\n\n" +
+						"data: " + `{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2000}}` + "\n\n" +
+						"data: " + `{"type":"message_stop"}` + "\n\n"
+					if mode == "stream_missing_output" {
+						body = strings.ReplaceAll(body, `"output_tokens":2000`, `"output_tokens":0`)
+					}
+				}
+				recorder := httptest.NewRecorder()
+				c, _ := gin.CreateTestContext(recorder)
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+				resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(body))}
+				info := &relaycommon.RelayInfo{RelayFormat: format, IsStream: stream, ShouldIncludeUsage: true, DisablePing: true,
+					ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "claude-test"}}
+				info.SetEstimatePromptTokens(100)
+				var originalWrites []int
+				info.ResponseUsageRewrite = func(raw *dto.Usage) *dto.Usage {
+					original := raw
+					if canonical, ok := raw.BillingUsage.CanonicalUsage(); ok {
+						original = canonical
+					}
+					originalWrites = append(originalWrites, original.PromptTokensDetails.CacheCreationTokensTotal())
+					adjusted := *original
+					adjusted.PromptTokensDetails = original.PromptTokensDetails.Clone()
+					adjusted.PromptTokens, adjusted.InputTokens = 4, 100
+					adjusted.CompletionTokens, adjusted.OutputTokens = 0, 0
+					if mode == "stream_missing_output" {
+						adjusted.CompletionTokens = original.CompletionTokens + 1
+						adjusted.OutputTokens = adjusted.CompletionTokens
+					}
+					adjusted.TotalTokens = 4
+					adjusted.UsageSemantic = dto.BillingUsageSemanticAnthropic
+					adjusted.PromptTokensDetails.CachedTokens = 89
+					adjusted.PromptTokensDetails.CacheWriteTokens = original.PromptTokensDetails.CacheCreationTokensTotal() + 7
+					adjusted.PromptTokensDetails.CachedCreationTokens = adjusted.PromptTokensDetails.CacheWriteTokens
+					adjusted.ClaudeCacheCreation5mTokens = adjusted.PromptTokensDetails.CacheWriteTokens
+					adjusted.ResponseUsageRewritten = true
+					adjusted.BillingUsage = dto.NewCanonicalBillingUsage(&adjusted)
+					return &adjusted
+				}
+				var usage *dto.Usage
+				var apiErr *types.NewAPIError
+				if stream && format == types.RelayFormatOpenAIResponses {
+					usage, apiErr = ClaudeResponsesStreamHandler(c, resp, info)
+				} else if stream {
+					usage, apiErr = ClaudeStreamHandler(c, resp, info)
+				} else {
+					usage, apiErr = ClaudeHandler(c, resp, info)
+				}
+				require.Nil(t, apiErr)
+				require.NotNil(t, usage)
+				wantOutput := 0
+				if mode == "stream_missing_output" {
+					wantOutput = tokenkit.Count("claude-test", "hello") + 1
+				}
+				assert.Equal(t, 4, usage.PromptTokens)
+				assert.Equal(t, wantOutput, usage.CompletionTokens)
+				assert.Equal(t, 7, usage.PromptTokensDetails.CacheCreationTokensTotal())
+				require.NotEmpty(t, originalWrites)
+				for _, count := range originalWrites {
+					assert.Zero(t, count, "the converter must retain original usage")
+				}
+				var visible ojson.Result
+				for line := range strings.SplitSeq(recorder.Body.String(), "\n") {
+					line = strings.TrimPrefix(line, "data: ")
+					for _, path := range []string{"usage", "message.usage", "response.usage", "usageMetadata"} {
+						if candidate := ojson.Get(line, path); candidate.IsObject() {
+							visible = candidate
+						}
+					}
+				}
+				require.True(t, visible.IsObject(), recorder.Body.String())
+				var snapshot dto.BillingUsage
+				require.NoError(t, common.UnmarshalJsonStr(visible.Get("billing_usage").Raw, &snapshot))
+				canonical, ok := snapshot.CanonicalUsage()
+				require.True(t, ok)
+				assert.Equal(t, 4, canonical.PromptTokens)
+				assert.Equal(t, 7, canonical.PromptTokensDetails.CacheCreationTokensTotal())
+				assert.Equal(t, wantOutput, canonical.CompletionTokens)
+				inputPath, outputPath, readPath, writePath := "prompt_tokens", "completion_tokens", "prompt_tokens_details.cached_tokens", "prompt_tokens_details.cache_write_tokens"
+				input := int64(100)
+				switch format {
+				case types.RelayFormatClaude:
+					inputPath, outputPath, readPath, writePath = "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"
+					input = 4
+				case types.RelayFormatOpenAIResponses:
+					inputPath, outputPath, readPath, writePath = "input_tokens", "output_tokens", "input_tokens_details.cached_tokens", "input_tokens_details.cache_write_tokens"
+				case types.RelayFormatGemini:
+					inputPath, outputPath, readPath, writePath = "promptTokenCount", "candidatesTokenCount", "cachedContentTokenCount", "cacheWriteTokenCount"
+				}
+				assert.Equal(t, input, visible.Get(inputPath).Int())
+				assert.Equal(t, int64(wantOutput), visible.Get(outputPath).Int())
+				assert.Equal(t, int64(89), visible.Get(readPath).Int())
+				assert.Equal(t, int64(7), visible.Get(writePath).Int())
+				if !stream && format == types.RelayFormatClaude {
+					assert.Equal(t, "retained", ojson.Get(recorder.Body.String(), "vendor_field").Str)
+					assert.Equal(t, int64(17), visible.Get("vendor_tokens").Int())
+				}
+			})
+		}
+	}
+}
 
 func commonPointer[T any](value T) *T {
 	return &value

@@ -11,18 +11,55 @@ concurrency:
   group: staging-image-us-4-8
   cancel-in-progress: false
 
-# Build only for the existing isolated test environment. The repository owner
-# requested no tests for this follow-up; local typecheck and targeted lint passed.
+# Build only the reviewed source for the existing isolated test environment.
+# Reuse local frontend and accounting checks; verify affected Go paths on Linux.
 # Production publishing remains a separate, protected registry workflow.
 env:
-  SOURCE_SHA: 84b077300f5d77d26c73b6cf8f6691556ca68ddb
-  UPSTREAM_SHA: ea343c4a81151bfd537d33b66527c25fa21a1112
-  RELEASE_VERSION: custom-v2026.11.07.1-rc.2
-  IMAGE_REF: new-api-staging:custom-v2026.11.07.1-rc.2
+  SOURCE_SHA: c33e69bc822c94fc73dda2115c86ff015fa410e2
+  UPSTREAM_SHA: c9c6da2786b6a0912215127e78e28fbc6650c85f
+  RELEASE_VERSION: custom-v2026.11.19.8-rc.1
+  IMAGE_REF: new-api-staging:custom-v2026.11.19.8-rc.1
 
 jobs:
+  verify:
+    name: Verify stream start and response regression
+    if: github.repository == 'cao258190/new-api' && github.ref == 'refs/heads/codex/request-plugin-usage-rewrite'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      GOWORK: 'off'
+    steps:
+      - name: Checkout fixed source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            relaykit/go.sum
+            tokenkit/go.sum
+      - name: Verify root module, stream start and response accounting
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          mkdir -p web/dist
+          touch web/dist/index.html
+          go vet ./...
+          go build ./...
+          go test ./controller ./middleware ./model ./pkg/jsplugin ./pkg/requestpatch ./plugins ./relay/... ./service ./i18n
+          go test -race ./relay/requestplugin -run TestStreamStart -count=1
+      - name: Verify relaykit independently
+        working-directory: relaykit
+        run: |
+          set -euo pipefail
+          go build ./...
+          go test ./dto ./relayconvert/...
   build:
-    if: github.repository == 'cao258190/new-api' && github.ref == 'refs/heads/codex/subscription-redemption-codes'
+    if: github.repository == 'cao258190/new-api' && github.ref == 'refs/heads/codex/request-plugin-usage-rewrite'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -62,6 +99,28 @@ jobs:
           cache-from: type=gha,scope=staging-amd64
           cache-to: type=gha,mode=max,scope=staging-amd64
 
+      - name: Smoke-test staging image
+        run: |
+          set -euo pipefail
+          trap 'docker rm -f new-api-staging-smoke >/dev/null 2>&1 || true' EXIT
+          docker run -d --name new-api-staging-smoke \
+            --tmpfs /data:rw,size=256m \
+            -p 127.0.0.1:3002:3000 \
+            -e SESSION_SECRET="$(openssl rand -hex 32)" \
+            -e CRYPTO_SECRET="$(openssl rand -hex 32)" \
+            "$IMAGE_REF"
+          for attempt in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:3002/api/status > "$RUNNER_TEMP/release/smoke-status.json" \
+              && jq -e --arg version "$RELEASE_VERSION" '.success == true and .data.version == $version' \
+                "$RUNNER_TEMP/release/smoke-status.json" >/dev/null; then
+              curl -fsS http://127.0.0.1:3002/ | grep -qi '<html'
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs --tail 100 new-api-staging-smoke
+          exit 1
+
       - name: Export immutable staging artifact
         env:
           BUILD_METADATA: ${{ steps.build.outputs.metadata }}
@@ -72,11 +131,11 @@ jobs:
           jq -n --arg version "$RELEASE_VERSION" --arg image "$IMAGE_REF" --arg id "$image_id" \
             --arg source "$(git rev-parse HEAD)" --arg upstream "$UPSTREAM_SHA" \
             --arg workflow_sha "$GITHUB_SHA" --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            '{version:$version,image_ref:$image,image_id:$id,source_sha:$source,upstream_sha:$upstream,workflow_sha:$workflow_sha,platform:"linux/amd64",run_url:$run_url,purpose:"isolated staging only",tests:{rerun:false,reason:"explicit user request"},security_scanning:{enabled:false,policy:"existing isolated staging policy"}}' \
+            '{version:$version,image_ref:$image,image_id:$id,source_sha:$source,upstream_sha:$upstream,workflow_sha:$workflow_sha,platform:"linux/amd64",run_url:$run_url,purpose:"isolated staging only",tests:{local:"requestplugin, requestpatch, plugins, channel, relay/common and service tests passed; Responses text, reasoning, tool-call output, input replay and failure cases passed",frontend:"typecheck and 14 config-form tests passed; existing schema form reused; changed plugin lint/format passed; production frontend built in this image",linux_regression:"separate Verify stream start and response regression job plus focused stream-start race test; require overall run success",database_matrix:"not rerun: no schema, query or driver changes",image_smoke:"passed"},security_scanning:{enabled:false,policy:"existing isolated staging policy"}}' \
             > "$RUNNER_TEMP/release/release.json"
           docker save "$IMAGE_REF" | gzip -1 > "$RUNNER_TEMP/release/image.tar.gz"
           cd "$RUNNER_TEMP/release"
-          sha256sum image.tar.gz release.json build-metadata.json > SHA256SUMS
+          sha256sum image.tar.gz release.json build-metadata.json smoke-status.json > SHA256SUMS
 
       - name: Upload staging image and build metadata
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.6.2

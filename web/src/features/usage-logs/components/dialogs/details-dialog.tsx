@@ -49,6 +49,7 @@ import {
   UserCog,
   Info,
   LogIn,
+  Workflow,
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
@@ -66,6 +67,7 @@ import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 import { formatLogQuota, formatTokens, formatUseTime } from '@/lib/format'
 import { translateServerText } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
+import { useUsageLogsPreferencesStore } from '@/stores/usage-logs-preferences-store'
 
 import { AuditDetailFields } from '../../audit/components/audit-detail-fields'
 import type { UsageLog } from '../../data/schema'
@@ -93,6 +95,10 @@ import {
 import { USAGE_BILLING_PATH, type LogOtherData } from '../../types'
 import { ResponseModelDetails } from '../model-badge'
 import { PluginAuthorLink } from '../plugin-author-link'
+import {
+  RequestPluginAdminSteps,
+  RequestPluginRecord,
+} from '../request-plugin-record'
 import { DetailRow, DetailSection } from './log-detail-layout'
 
 // Maps a channel-update changed-field token (as recorded by the backend audit)
@@ -519,6 +525,9 @@ interface DetailsDialogProps {
 
 export function DetailsDialog(props: DetailsDialogProps) {
   const { t } = useTranslation()
+  const processingVisible = useUsageLogsPreferencesStore(
+    (state) => state.showRequestProcessing
+  )
   const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
   const other = parseLogOther(props.log.other)
   const typeConfig = getLogTypeConfig(props.log.type)
@@ -966,6 +975,41 @@ export function DetailsDialog(props: DetailsDialogProps) {
           </DetailSection>
         ) : null}
 
+        {props.isAdmin &&
+        processingVisible &&
+        adminInfo?.request_plugins?.length ? (
+          <DetailSection label={t('Request processing steps')}>
+            <RequestPluginAdminSteps steps={adminInfo.request_plugins} />
+          </DetailSection>
+        ) : null}
+
+        {props.isAdmin && processingVisible && adminInfo?.stream_start ? (
+          <DetailSection label={t('Stream start diagnostics')}>
+            <DetailRow
+              label={t('Start event timing')}
+              value={
+                adminInfo.stream_start.timing === 'before_upstream'
+                  ? t('Before requesting upstream')
+                  : t('After upstream response headers')
+              }
+            />
+            <DetailRow
+              label={t('Gateway first event')}
+              value={formatUseTime(
+                adminInfo.stream_start.client_first_response_ms / 1000
+              )}
+            />
+            {adminInfo.stream_start.upstream_first_response_ms != null ? (
+              <DetailRow
+                label={t('Upstream first event')}
+                value={formatUseTime(
+                  adminInfo.stream_start.upstream_first_response_ms / 1000
+                )}
+              />
+            ) : null}
+          </DetailSection>
+        ) : null}
+
         {props.isRoot && other?.root_info ? (
           <DetailSection label={t('Root Diagnostics')}>
             {other.root_info.task_plugin ? (
@@ -1354,6 +1398,21 @@ export function DetailsDialog(props: DetailsDialogProps) {
             )}
           </DetailSection>
         )}
+
+        {props.isAdmin &&
+        processingVisible &&
+        other?.request_plugins?.length ? (
+          <DetailSection
+            icon={<Workflow className='size-3.5' aria-hidden='true' />}
+            iconTone='chart-3'
+            label={t('Request processing')}
+          >
+            <RequestPluginRecord
+              items={other.request_plugins}
+              loadIcons={props.isRoot}
+            />
+          </DetailSection>
+        ) : null}
 
         {/* Param override */}
         {other?.po && Array.isArray(other.po) && other.po.length > 0 && (

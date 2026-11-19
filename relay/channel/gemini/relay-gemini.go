@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
@@ -21,7 +22,6 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
 )
 
 func buildUsageFromGeminiMetadata(metadata *dto.GeminiUsageMetadata, fallbackPromptTokens int) dto.Usage {
@@ -222,7 +222,7 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			info.PerformanceBusinessRejection = true
 			common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_block_reason=%s", *geminiResponse.PromptFeedback.BlockReason))
 		}
-		info.ObserveResponseModel(gjson.Get(data, "modelVersion").Str)
+		info.ObserveResponseModel(ojson.Get(data, "modelVersion").Str)
 		for _, candidate := range geminiResponse.Candidates {
 			if candidate.FinishReason == nil || *candidate.FinishReason == "" || *candidate.FinishReason == "FINISH_REASON_UNSPECIFIED" {
 				continue
@@ -255,6 +255,19 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			mappedUsage := buildUsageFromGeminiMetadata(accumulatedUsageMetadata, info.GetEstimatePromptTokens())
 			*usage = mappedUsage
 			hasBillableUsageMetadata = true
+		}
+		if info.ResponseUsageRewrite != nil && info.RelayFormat == types.RelayFormatGemini && geminiResponse.GetUsageMetadata() != nil {
+			// Keep the provider DTO and cumulative state untouched. Only the
+			// native wire copy receives the policy's checked quantities.
+			if rewritten := info.RewriteResponseUsage(usage); rewritten != usage {
+				patched, err := openai.PatchResponseUsageJSON([]byte(data), "usageMetadata", types.RelayFormatGemini, rewritten)
+				if err != nil {
+					streamErr = err
+					sr.Stop(err)
+					return
+				}
+				data = string(patched)
+			}
 		}
 
 		if !callback(data, &geminiResponse) {
@@ -394,7 +407,7 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 	})
 
 	if err != nil {
-		return usage, err
+		return info.RewriteResponseUsage(usage), err
 	}
 
 	response := helper.GenerateFinalUsageResponse(id, createAt, info.UpstreamModelName, *usage)
@@ -406,7 +419,7 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 	if handleErr != nil {
 		common.SysLog(common.LogText("send final response failed: %s", handleErr.Error()))
 	}
-	return usage, nil
+	return info.RewriteResponseUsage(usage), nil
 }
 
 func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -421,7 +434,7 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
-	info.ObserveResponseModel(gjson.GetBytes(responseBody, "modelVersion").Str)
+	info.ObserveResponseModel(ojson.GetBytes(responseBody, "modelVersion").Str)
 	var grounding geminiGroundingCounter
 	grounding.observe(&geminiResponse)
 	grounding.commit(info)
@@ -487,10 +500,21 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 	case types.RelayFormatGemini:
 		break
 	}
+	finalUsage := info.RewriteResponseUsage(&usage)
+	if finalUsage != &usage {
+		path := "usage"
+		if info.RelayFormat == types.RelayFormatGemini {
+			path = "usageMetadata"
+		}
+		responseBody, err = openai.PatchResponseUsageJSON(responseBody, path, info.RelayFormat, finalUsage)
+		if err != nil {
+			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+		}
+	}
 
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
-	return &usage, nil
+	return finalUsage, nil
 }
 
 func GeminiEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -526,7 +550,13 @@ func GeminiEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 	// Google has not yet clarified how embedding models will be billed
 	// refer to openai billing method to use input tokens billing
 	// https://platform.openai.com/docs/guides/embeddings#what-are-embeddings
-	usage := service.ResponseText2Usage(c, "", info.UpstreamModelName, info.GetEstimatePromptTokens())
+	var usage *dto.Usage
+	if upstream := geminiResponse.UsageMetadata.GeminiUsageMetadata(); upstream != nil {
+		upstreamUsage := buildUsageFromGeminiMetadata(upstream, info.GetEstimatePromptTokens())
+		usage = &upstreamUsage
+	} else {
+		usage = service.ResponseText2Usage(c, "", info.UpstreamModelName, info.GetEstimatePromptTokens())
+	}
 	openAIResponse.Usage = *usage
 
 	jsonResponse, jsonErr := common.Marshal(openAIResponse)

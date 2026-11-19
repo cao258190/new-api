@@ -8,6 +8,57 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestCanonicalAccountingSnapshotPreservesSemanticAndZero(t *testing.T) {
+	for _, semantic := range []string{BillingUsageSemanticOpenAI, BillingUsageSemanticAnthropic, BillingUsageSemanticGemini} {
+		t.Run(semantic, func(t *testing.T) {
+			original := &Usage{UsageSemantic: semantic, ResponseUsageRewritten: true,
+				BillingUsage: NewOpenAIChatBillingUsage(&Usage{PromptTokens: 100, CompletionTokens: 2000})}
+			billing := NewCanonicalBillingUsage(original)
+			require.NotNil(t, billing)
+			canonical, ok := billing.CanonicalUsage()
+			require.True(t, ok)
+			assert.Equal(t, semantic, canonical.UsageSemantic)
+			assert.Zero(t, canonical.PromptTokens)
+			assert.Zero(t, canonical.CompletionTokens)
+			assert.True(t, canonical.ResponseUsageRewritten)
+			require.NotNil(t, canonical.BillingUsage)
+			assert.Nil(t, canonical.BillingUsage.OpenAIUsage.BillingUsage)
+			encoded, err := kitutil.Marshal(billing)
+			require.NoError(t, err)
+			assert.NotContains(t, string(encoded), "ResponseUsageRewritten")
+			var transferred BillingUsage
+			require.NoError(t, kitutil.Unmarshal(encoded, &transferred))
+			decoded, ok := transferred.CanonicalUsage()
+			require.True(t, ok)
+			assert.Equal(t, semantic, decoded.UsageSemantic)
+			assert.Zero(t, decoded.PromptTokens)
+			assert.Zero(t, decoded.CompletionTokens)
+			assert.False(t, decoded.ResponseUsageRewritten, "another gateway may apply its own policy")
+			estimated := CloneBillingUsageWithEstimatedCompletion(&transferred, 77)
+			afterEstimate, ok := estimated.CanonicalUsage()
+			require.True(t, ok)
+			assert.Zero(t, afterEstimate.CompletionTokens, "explicit zero must not become estimated output")
+			assert.False(t, estimated.Estimated)
+		})
+	}
+}
+
+func TestCanonicalAccountingSnapshotOwnsTokenDetails(t *testing.T) {
+	original := &Usage{UsageSemantic: BillingUsageSemanticOpenAI, PromptTokens: 100,
+		PromptTokensDetails: InputTokenDetails{CacheWriteTokensDetails: &CacheWriteTokenDetails{TTL12hTokens: 8}},
+		OutputTokensDetails: &OutputTokenDetails{ReasoningTokens: 7}}
+	billing := NewCanonicalBillingUsage(original)
+	original.PromptTokensDetails.CacheWriteTokensDetails.TTL12hTokens = 99
+	original.OutputTokensDetails.ReasoningTokens = 99
+	canonical, ok := billing.CanonicalUsage()
+	require.True(t, ok)
+	assert.Equal(t, 8, canonical.PromptTokensDetails.CacheWriteTokensDetails.TTL12hTokens)
+	require.NotNil(t, canonical.OutputTokensDetails)
+	assert.Equal(t, 7, canonical.OutputTokensDetails.ReasoningTokens)
+	canonical.OutputTokensDetails.ReasoningTokens = 42
+	assert.Equal(t, 7, billing.OpenAIUsage.OutputTokensDetails.ReasoningTokens)
+}
+
 func TestNewGeminiChatBillingUsageRequiresTokenContent(t *testing.T) {
 	require.Nil(t, NewGeminiChatBillingUsage(nil))
 	require.Nil(t, NewGeminiChatBillingUsage(&GeminiUsageMetadata{}))

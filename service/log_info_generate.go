@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/base64"
+	"slices"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -81,6 +82,20 @@ func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 		if relayInfo.ConversionDiagnosticsTruncated() {
 			other.SetAdmin("conversion_diagnostics_truncated", true)
 		}
+		if len(relayInfo.RequestPluginSteps) > 0 {
+			other.SetAdmin("request_plugins", relayInfo.RequestPluginSteps)
+		}
+		if len(relayInfo.ResponseUsageAudit) > 0 {
+			other.SetAdmin("response_usage", relayInfo.ResponseUsageAudit)
+		}
+		if !relayInfo.ClientFirstResponseTime.IsZero() {
+			start := map[string]any{"timing": relayInfo.StreamStartTiming,
+				"client_first_response_ms": max(int64(1), relayInfo.ClientFirstResponse().Sub(relayInfo.StartTime).Milliseconds())}
+			if relayInfo.HasSendResponse() {
+				start["upstream_first_response_ms"] = relayInfo.FirstResponseTime.Sub(relayInfo.StartTime).Milliseconds()
+			}
+			other.SetAdmin("stream_start", start)
+		}
 	}
 	if common.GetContextKeyBool(ctx, constant.ContextKeyChannelIsMultiKey) {
 		other.SetAdmin("is_multi_key", true)
@@ -107,7 +122,11 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	other.SetPublic("cache_ratio", cacheRatio)
 	other.SetPublic("model_price", modelPrice)
 	other.SetPublic("user_group_ratio", userGroupRatio)
-	other.SetPublic("frt", float64(relayInfo.FirstResponseTime.UnixMilli()-relayInfo.StartTime.UnixMilli()))
+	firstResponse := relayInfo.ClientFirstResponse().Sub(relayInfo.StartTime).Milliseconds()
+	if !relayInfo.ClientFirstResponseTime.IsZero() {
+		firstResponse = max(int64(1), firstResponse)
+	}
+	other.SetPublic("frt", float64(firstResponse))
 	if relayInfo.ReasoningEffort != "" {
 		other.SetPublic("reasoning_effort", relayInfo.ReasoningEffort)
 	}
@@ -128,6 +147,7 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	appendFinalRequestFormat(relayInfo, other)
 	appendBillingInfo(relayInfo, other)
 	appendParamOverrideInfo(relayInfo, other)
+	appendRequestPluginRecord(relayInfo, other)
 	appendStreamStatus(relayInfo, other)
 	return other
 }
@@ -150,6 +170,16 @@ func appendParamOverrideInfo(relayInfo *relaycommon.RelayInfo, other *model.LogO
 		return
 	}
 	other.SetPublic("po", relayInfo.ParamOverrideAudit)
+}
+
+// appendRequestPluginRecord preserves the request change summary for operators.
+// User log projections strip it. A retry rewrites the attempt's entries in
+// place, so the log keeps a copy.
+func appendRequestPluginRecord(relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
+	if relayInfo == nil || other == nil || len(relayInfo.RequestPluginRecord) == 0 {
+		return
+	}
+	other.SetPublic("request_plugins", relaycommon.CapRequestPluginRecord(slices.Clone(relayInfo.RequestPluginRecord)))
 }
 
 func appendStreamStatus(relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
@@ -325,6 +355,7 @@ func GenerateMjOtherInfo(relayInfo *relaycommon.RelayInfo, priceData hosttypes.P
 		other.SetPublic("user_group_ratio", priceData.GroupRatioInfo.GroupSpecialRatio)
 	}
 	appendRequestPath(nil, relayInfo, other)
+	appendRequestPluginRecord(relayInfo, other)
 	return other
 }
 

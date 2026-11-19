@@ -6,9 +6,11 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -16,7 +18,6 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
 )
 
 func GeminiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -32,7 +33,7 @@ func GeminiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 	if err := common.Unmarshal(responseBody, &geminiResponse); err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
-	info.ObserveResponseModel(gjson.GetBytes(responseBody, "modelVersion").Str)
+	info.ObserveResponseModel(ojson.GetBytes(responseBody, "modelVersion").Str)
 	var grounding geminiGroundingCounter
 	grounding.observe(&geminiResponse)
 	grounding.commit(info)
@@ -76,8 +77,15 @@ func GeminiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 	}
+	finalUsage := info.RewriteResponseUsage(&usage)
+	if finalUsage != &usage {
+		responseBody, err = openai.PatchResponseUsageJSON(responseBody, "usage", types.RelayFormatOpenAIResponses, finalUsage)
+		if err != nil {
+			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+		}
+	}
 	service.IOCopyBytesGracefully(c, resp, responseBody)
-	return &usage, nil
+	return finalUsage, nil
 }
 
 func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -94,11 +102,21 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 	}
 	hostedBridge := relayconvert.NewGeminiHostedStreamBridge()
 	var streamErr *types.NewAPIError
+	var finalUsage *dto.Usage
 
 	sendEvent := func(event relayconvert.ChatToResponsesStreamEvent) bool {
 		data, err := common.Marshal(event.Payload)
 		if err != nil {
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
+			return false
+		}
+		if finalUsage != nil && event.Payload.Response != nil && event.Payload.Response.Usage != nil {
+			data, err = openai.PatchResponseUsageJSON(data, "response.usage", types.RelayFormatOpenAIResponses, finalUsage)
+		} else {
+			data, err = openai.RewriteResponseUsageJSON(info, data, types.RelayFormatOpenAIResponses)
+		}
+		if err != nil {
+			streamErr = types.NewError(err, types.ErrorCodeBadResponseBody)
 			return false
 		}
 		if err := helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: event.Type}, string(data)); err != nil {
@@ -183,6 +201,9 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 	if usage != nil {
 		state.SetUsage(usage)
 	}
+	if rewritten := info.RewriteResponseUsage(usage); rewritten != usage {
+		finalUsage = rewritten
+	}
 	finalResults, err := service.FinalizeStreamResponse(c, info, state)
 	if err != nil {
 		if failResponsesStream(err) {
@@ -202,5 +223,5 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 			return usage, nil
 		}
 	}
-	return usage, nil
+	return info.RewriteResponseUsage(usage), nil
 }

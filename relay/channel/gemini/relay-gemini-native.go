@@ -8,14 +8,15 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
-	"github.com/tidwall/gjson"
 )
 
 func GeminiTextGenerationHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
@@ -35,7 +36,7 @@ func GeminiTextGenerationHandler(c *gin.Context, info *relaycommon.RelayInfo, re
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
-	info.ObserveResponseModel(gjson.GetBytes(responseBody, "modelVersion").Str)
+	info.ObserveResponseModel(ojson.GetBytes(responseBody, "modelVersion").Str)
 	var grounding geminiGroundingCounter
 	grounding.observe(&geminiResponse)
 	grounding.commit(info)
@@ -48,10 +49,17 @@ func GeminiTextGenerationHandler(c *gin.Context, info *relaycommon.RelayInfo, re
 
 	// 计算使用量（优先上游 UsageMetadata，缺失时本地估算并保留 Gemini 计费语义）
 	usage := buildUsageFromGeminiResponse(c, info, &geminiResponse)
+	finalUsage := info.RewriteResponseUsage(&usage)
+	if finalUsage != &usage {
+		responseBody, err = openai.PatchResponseUsageJSON(responseBody, "usageMetadata", types.RelayFormatGemini, finalUsage)
+		if err != nil {
+			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+		}
+	}
 
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 
-	return &usage, nil
+	return finalUsage, nil
 }
 
 func NativeGeminiEmbeddingHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (*dto.Usage, *types.NewAPIError) {
@@ -64,20 +72,29 @@ func NativeGeminiEmbeddingHandler(c *gin.Context, resp *http.Response, info *rel
 
 	logger.LogDebug(c, "Gemini native embedding response body: %s", responseBody)
 
-	usage := service.ResponseText2Usage(c, "", info.UpstreamModelName, info.GetEstimatePromptTokens())
-
+	var metadata *dto.GeminiEmbeddingUsageMetadata
 	if info.IsGeminiBatchEmbedding {
 		var geminiResponse dto.GeminiBatchEmbeddingResponse
 		err = common.Unmarshal(responseBody, &geminiResponse)
 		if err != nil {
 			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 		}
+		metadata = geminiResponse.UsageMetadata
 	} else {
 		var geminiResponse dto.GeminiEmbeddingResponse
 		err = common.Unmarshal(responseBody, &geminiResponse)
 		if err != nil {
 			return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 		}
+		metadata = geminiResponse.UsageMetadata
+	}
+
+	var usage *dto.Usage
+	if upstream := metadata.GeminiUsageMetadata(); upstream != nil {
+		upstreamUsage := buildUsageFromGeminiMetadata(upstream, info.GetEstimatePromptTokens())
+		usage = &upstreamUsage
+	} else {
+		usage = service.ResponseText2Usage(c, "", info.UpstreamModelName, info.GetEstimatePromptTokens())
 	}
 
 	service.IOCopyBytesGracefully(c, resp, responseBody)
@@ -88,7 +105,7 @@ func NativeGeminiEmbeddingHandler(c *gin.Context, resp *http.Response, info *rel
 func GeminiTextGenerationStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	helper.SetEventStreamHeaders(c)
 
-	return geminiStreamHandler(c, info, resp, func(data string, geminiResponse *dto.GeminiChatResponse) bool {
+	usage, apiErr := geminiStreamHandler(c, info, resp, func(data string, geminiResponse *dto.GeminiChatResponse) bool {
 		err := helper.StringData(c, data)
 		if err != nil {
 			logger.LogError(c, common.LogText("failed to write stream data: %s", err.Error()))
@@ -97,4 +114,19 @@ func GeminiTextGenerationStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 		info.SendResponseCount++
 		return true
 	})
+	finalUsage := info.RewriteResponseUsage(usage)
+	if apiErr == nil && finalUsage != usage && info.StreamStatus != nil && info.StreamStatus.IsNormalEnd() {
+		// Gemini permits a metadata-only final frame. It also covers streams
+		// whose provider omitted output usage and required a local estimate.
+		data, err := openai.PatchResponseUsageJSON([]byte(`{"usageMetadata":{}}`), "usageMetadata", types.RelayFormatGemini, finalUsage)
+		if err != nil {
+			return finalUsage, types.NewError(err, types.ErrorCodeBadResponseBody)
+		}
+		if err := helper.StringData(c, string(data)); err != nil {
+			logger.LogError(c, common.LogText("failed to write stream data: %s", err.Error()))
+		} else {
+			info.SendResponseCount++
+		}
+	}
+	return finalUsage, apiErr
 }

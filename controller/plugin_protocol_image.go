@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -18,7 +16,7 @@ import (
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relay"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	relaydto "github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relay/requestplugin"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
@@ -43,7 +41,11 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 	var relayInfoErr error
 	var outcome *taskSubmissionOutcome
 	var taskErr *dto.TaskError
-	var quotaErr error
+	// The request plugins' report hooks receive the submission once the
+	// client has the response.
+	defer func() {
+		requestplugin.Report(c, types.RelayFormatTask, relayInfo, nil, taskReportError(taskErr))
+	}()
 	// DashScope bills the images as soon as it accepts the upstream call. A
 	// client that gives up while the submission is in flight must not cancel
 	// that call, the task row, its settlement, or its consume log, so the
@@ -77,13 +79,7 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 			return
 		}
 		if relayInfo.IsPlayground && relayInfo.UsingGroup == service.ImageStudioFreeImageGroup {
-			reservation, reserveErr := service.ReserveImageStudioFreeImages(taskPluginImageCount(protocolRequest))
-			if reserveErr != nil {
-				quotaErr = reserveErr
-				return
-			}
 			relayInfo.IsImageStudioFree = true
-			relayInfo.ImageStudioQuotaReservation = reservation
 		}
 		outcome, taskErr = deps.submit(c, relayInfo)
 	}()
@@ -95,22 +91,6 @@ func serveTaskPluginImageProtocol(c *gin.Context, pinned pluginruntime.PinnedEnd
 	if relayInfoErr != nil {
 		logger.LogError(c, common.LogText("build task protocol relay info failed: %s", relayInfoErr.Error()))
 		respondPluginProtocolError(c, http.StatusInternalServerError, "task_protocol_error", "Task protocol request failed")
-		return
-	}
-	if quotaErr != nil {
-		statusCode := http.StatusServiceUnavailable
-		message := "Image Studio free quota is temporarily unavailable"
-		code := "image_studio_quota_unavailable"
-		if errors.Is(quotaErr, service.ErrImageStudioInvalidImageCount) {
-			statusCode = http.StatusBadRequest
-			message = "Image count is invalid"
-			code = "invalid_image_count"
-		} else if errors.Is(quotaErr, service.ErrImageStudioQuotaExceeded) {
-			statusCode = http.StatusTooManyRequests
-			message = "Daily free image quota is insufficient"
-			code = "image_studio_quota_exceeded"
-		}
-		respondPluginProtocolError(c, statusCode, code, message)
 		return
 	}
 	if taskErr != nil {
@@ -254,36 +234,6 @@ func taskPluginImageResponseFormat(request pluginruntime.ProtocolRequestContext)
 		}
 	}
 	return ""
-}
-
-func taskPluginImageCount(request pluginruntime.ProtocolRequestContext) int {
-	body, ok := request.Body.(map[string]any)
-	if !ok {
-		return 1
-	}
-	var raw any
-	switch body["kind"] {
-	case string(pluginruntime.BodyJSON):
-		value, _ := body["value"].(map[string]any)
-		raw = value["n"]
-	case string(pluginruntime.BodyMultipart), string(pluginruntime.BodyForm):
-		fields, _ := body["fields"].(map[string][]string)
-		if values := fields["n"]; len(values) > 0 {
-			parsed, err := strconv.Atoi(values[0])
-			if err == nil && parsed >= 1 && parsed <= relaydto.MaxImageN {
-				return parsed
-			}
-			return 0
-		}
-	}
-	if raw == nil {
-		return 1
-	}
-	count, ok := raw.(float64)
-	if !ok || count < 1 || count > relaydto.MaxImageN || math.Trunc(count) != count {
-		return 0
-	}
-	return int(count)
 }
 
 // respondTaskPluginImageError writes an OpenAI error envelope for the Images

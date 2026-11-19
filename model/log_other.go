@@ -244,7 +244,8 @@ func formatLogOtherJSON(value string, visibility logOtherVisibility) string {
 
 	changed := false
 	if visibility == logOtherVisibilityUser {
-		for _, key := range []string{logOtherAdminInfoKey, logOtherRootInfoKey, logOtherAuditInfoKey} {
+		// Operator diagnostics include historical top-level processing records.
+		for _, key := range []string{logOtherAdminInfoKey, logOtherRootInfoKey, logOtherAuditInfoKey, "request_plugins"} {
 			if _, exists := values[key]; exists {
 				delete(values, key)
 				changed = true

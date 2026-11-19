@@ -90,6 +90,9 @@ func (a *ResponsesUsageAccumulator) Finish() *dto.Usage {
 		return a.usage
 	}
 	a.finished = true
+	if !dto.HasOpenAIUsageTokens(a.usage) {
+		a.info.ResponseUsageEstimated = true
+	}
 	// A final image item can already have reached the client before the stream
 	// disconnects, so completed tool usage is retained even without a terminal.
 	if !a.imageCommitted {

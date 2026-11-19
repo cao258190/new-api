@@ -58,6 +58,13 @@ func OaiChatToResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
 	}
+	if rewritten := info.RewriteResponseUsage(usage); rewritten != usage {
+		usage = rewritten
+		responseBody, err = PatchResponseUsageJSON(responseBody, "usage", types.RelayFormatOpenAIResponses, usage)
+		if err != nil {
+			return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+		}
+	}
 
 	service.IOCopyBytesGracefully(c, resp, responseBody)
 	return usage, nil
@@ -87,6 +94,11 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		data, err := common.Marshal(event.Payload)
 		if err != nil {
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeJsonMarshalFailed, http.StatusInternalServerError)
+			return false
+		}
+		data, err = RewriteResponseUsageJSON(info, data, types.RelayFormatOpenAIResponses)
+		if err != nil {
+			streamErr = types.NewError(err, types.ErrorCodeBadResponseBody)
 			return false
 		}
 		if err := helper.ResponseChunkData(c, dto.ResponsesStreamResponse{Type: event.Type}, string(data)); err != nil {
@@ -197,7 +209,7 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		state.SetUsage(usage)
 	}
 	if info.StreamStatus.EndReason == relaycommon.StreamEndReasonClientGone {
-		return usage, nil
+		return info.RewriteResponseUsage(usage), nil
 	}
 
 	finalResults, err := service.FinalizeStreamResponse(c, info, state)
@@ -220,7 +232,7 @@ func OaiChatToResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 		}
 	}
 
-	return usage, nil
+	return info.RewriteResponseUsage(usage), nil
 }
 
 // stopStream ends a converted stream from the scanner callback. A nil

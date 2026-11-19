@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -110,6 +111,9 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 	}
 	if info.RelayFormat == types.RelayFormatClaude {
 		FormatClaudeResponseInfo(&claudeResponse, nil, claudeInfo)
+		if info.ResponseUsageRewrite != nil && claudeResponse.Type == "message_delta" {
+			finalizeClaudeStreamUsage(c, info, claudeInfo)
+		}
 
 		if claudeResponse.Type == "message_start" {
 			// message_start, 获取usage
@@ -124,6 +128,21 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 			}
 		}
 		countClaudeStreamBillableTools(info, &claudeResponse)
+		path := ""
+		if claudeResponse.Type == "message_start" && claudeResponse.Message != nil && claudeResponse.Message.Usage != nil {
+			path = "message.usage"
+		} else if claudeResponse.Type == "message_delta" && claudeResponse.Usage != nil {
+			path = "usage"
+		}
+		if path != "" {
+			if rewritten := info.RewriteResponseUsage(claudeInfo.Usage); rewritten != claudeInfo.Usage {
+				patched, err := openai.PatchResponseUsageJSON([]byte(data), path, types.RelayFormatClaude, rewritten)
+				if err != nil {
+					return types.NewError(err, types.ErrorCodeBadResponseBody)
+				}
+				data = string(patched)
+			}
+		}
 		helper.ClaudeChunkData(c, claudeResponse, data)
 	} else if info.RelayFormat == types.RelayFormatOpenAI {
 		state, err := claudeToChatStreamState(info)
@@ -138,13 +157,28 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		if !FormatClaudeResponseInfo(&claudeResponse, response, claudeInfo) {
 			return nil
 		}
+		if info.ResponseUsageRewrite != nil && claudeResponse.Type == "message_delta" {
+			finalizeClaudeStreamUsage(c, info, claudeInfo)
+		}
 
 		countClaudeStreamBillableTools(info, &claudeResponse)
 
 		if response == nil {
 			return nil
 		}
-		err = helper.ObjectData(c, response)
+		encoded, marshalErr := common.Marshal(response)
+		if marshalErr != nil {
+			return types.NewError(marshalErr, types.ErrorCodeBadResponseBody)
+		}
+		if response.Usage != nil {
+			if rewritten := info.RewriteResponseUsage(claudeInfo.Usage); rewritten != claudeInfo.Usage {
+				encoded, err = openai.PatchResponseUsageJSON(encoded, "usage", types.RelayFormatOpenAI, rewritten)
+				if err != nil {
+					return types.NewError(err, types.ErrorCodeBadResponseBody)
+				}
+			}
+		}
+		err = helper.StringData(c, string(encoded))
 		if err != nil {
 			logger.LogError(c, common.LogText("send_stream_response_failed: %s", err.Error()))
 		}
@@ -160,8 +194,15 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		if !FormatClaudeResponseInfo(&claudeResponse, nil, claudeInfo) {
 			return nil
 		}
+		var finalUsage *dto.Usage
+		if info.ResponseUsageRewrite != nil && claudeResponse.Type == "message_delta" {
+			finalizeClaudeStreamUsage(c, info, claudeInfo)
+			if rewritten := info.RewriteResponseUsage(claudeInfo.Usage); rewritten != claudeInfo.Usage {
+				finalUsage = rewritten
+			}
+		}
 		countClaudeStreamBillableTools(info, &claudeResponse)
-		if sendErr := sendGeminiStreamResults(c, results); sendErr != nil {
+		if sendErr := sendGeminiStreamResults(c, info, results, finalUsage); sendErr != nil {
 			return sendErr
 		}
 	}
@@ -203,7 +244,7 @@ func claudeToGeminiStreamState(info *relaycommon.RelayInfo) (*relayconvert.Respo
 	return state, nil
 }
 
-func sendGeminiStreamResults(c *gin.Context, results []relayconvert.ResponseResult) *types.NewAPIError {
+func sendGeminiStreamResults(c *gin.Context, info *relaycommon.RelayInfo, results []relayconvert.ResponseResult, finalUsage *dto.Usage) *types.NewAPIError {
 	for _, result := range results {
 		geminiResponse, ok := result.Value.(*dto.GeminiChatResponse)
 		if !ok {
@@ -213,6 +254,14 @@ func sendGeminiStreamResults(c *gin.Context, results []relayconvert.ResponseResu
 			continue
 		}
 		data, err := common.Marshal(geminiResponse)
+		if err != nil {
+			return types.NewError(err, types.ErrorCodeBadResponseBody)
+		}
+		if finalUsage != nil && geminiResponse.GetUsageMetadata() != nil {
+			data, err = openai.PatchResponseUsageJSON(data, "usageMetadata", types.RelayFormatGemini, finalUsage)
+		} else {
+			data, err = openai.RewriteResponseUsageJSON(info, data, types.RelayFormatGemini)
+		}
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeBadResponseBody)
 		}
@@ -272,7 +321,9 @@ func recordClaudeServerToolUse(info *relaycommon.RelayInfo, serverToolUse *dto.C
 	}
 }
 
-func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo) {
+// finalizeClaudeStreamUsage completes raw accounting before a terminal usage
+// snapshot is published; policy results never enter the upstream accumulator.
+func finalizeClaudeStreamUsage(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo) {
 	// Claude input_tokens excludes cache reads and writes, so a fully cached
 	// prompt reports zero input; the prompt is uncounted only when the total
 	// with cache is zero as well. Zero output is uncounted only when content
@@ -301,6 +352,11 @@ func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, clau
 		claudeInfo.Usage.UsageSemantic = "anthropic"
 	}
 	relayconvert.FinalizeClaudeStreamBillingUsage(claudeInfo)
+}
+
+func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo) {
+	finalizeClaudeStreamUsage(c, info, claudeInfo)
+	claudeInfo.Usage = info.RewriteResponseUsage(claudeInfo.Usage)
 
 	if info.RelayFormat == types.RelayFormatClaude {
 		//
@@ -325,7 +381,11 @@ func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, clau
 			common.SysLog(common.LogText("error finalizing Gemini stream response: %s", err.Error()))
 			return
 		}
-		if sendErr := sendGeminiStreamResults(c, results); sendErr != nil {
+		var finalUsage *dto.Usage
+		if claudeInfo.Usage.ResponseUsageRewritten {
+			finalUsage = claudeInfo.Usage
+		}
+		if sendErr := sendGeminiStreamResults(c, info, results, finalUsage); sendErr != nil {
 			common.SysLog(common.LogText("send final Gemini stream response failed: %s", sendErr.Error()))
 		}
 	}
@@ -434,6 +494,17 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		recordClaudeServerToolUse(info, claudeResponse.Usage.ServerToolUse)
 	}
 
+	if rewritten := info.RewriteResponseUsage(claudeInfo.Usage); rewritten != claudeInfo.Usage {
+		claudeInfo.Usage = rewritten
+		path := "usage"
+		if info.RelayFormat == types.RelayFormatGemini {
+			path = "usageMetadata"
+		}
+		responseData, err = openai.PatchResponseUsageJSON(responseData, path, info.RelayFormat, rewritten)
+		if err != nil {
+			return types.NewError(err, types.ErrorCodeBadResponseBody)
+		}
+	}
 	service.IOCopyBytesGracefully(c, httpResp, responseData)
 	return nil
 }
