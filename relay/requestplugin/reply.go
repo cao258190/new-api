@@ -78,7 +78,6 @@ func Reply(c *gin.Context, format types.RelayFormat, info *relaycommon.RelayInfo
 	if plan == nil || info == nil {
 		return func() {}
 	}
-	attachUsage(c, plan, format, info)
 	setting, _ := common.GetContextKeyType[dto.ChannelSettings](c, constant.ContextKeyChannelSetting)
 	group := requestGroup(c)
 	// The attempt's channel and settled group may bring report instances.

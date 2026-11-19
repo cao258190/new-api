@@ -378,7 +378,8 @@ func Outbound(c *gin.Context, info *relaycommon.RelayInfo, body []byte) ([]byte,
 
 // Egress runs the egress stage on the final upstream JSON body of a channel
 // attempt, after the channel param override. It changes nothing; an
-// instance can only stop the request.
+// instance can only stop the request. The response usage policy is attached
+// after channel initialization and conversion, before the upstream request.
 func Egress(c *gin.Context, info *relaycommon.RelayInfo, body []byte) *types.NewAPIError {
 	plan := planOf(c)
 	if plan == nil {
@@ -389,7 +390,11 @@ func Egress(c *gin.Context, info *relaycommon.RelayInfo, body []byte) *types.New
 	outcome := plan.Run(c.Request.Context(), call)
 	info.RequestPluginSteps = append(info.RequestPluginSteps, auditSteps(outcome)...)
 	info.RequestPluginRecord = append(info.RequestPluginRecord, outcome.Record...)
-	return settle(c, outcome)
+	if apiErr := settle(c, outcome); apiErr != nil {
+		return apiErr
+	}
+	attachUsage(c, plan, info.RelayFormat, info)
+	return nil
 }
 
 // PassThrough runs the attempt stages of a channel attempt whose upstream
@@ -417,6 +422,7 @@ func PassThrough(c *gin.Context, info *relaycommon.RelayInfo, storage common.Bod
 			return apiErr
 		}
 	}
+	attachUsage(c, plan, info.RelayFormat, info)
 	return nil
 }
 

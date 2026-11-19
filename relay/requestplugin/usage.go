@@ -74,7 +74,7 @@ func newUsageCheck(ctx context.Context, plan *Plan, call Call) *usageCheck {
 // attachUsage installs only the response token policy of supported HTTP text
 // endpoints. Image, audio, task and WebSocket accounting keep their own paths.
 func attachUsage(c *gin.Context, plan *Plan, format types.RelayFormat, info *relaycommon.RelayInfo) {
-	if !replyEndpoint(format, info.RelayMode, c.Request.URL.Path) {
+	if plan.socket || plan.submission != nil || !replyEndpoint(format, info.RelayMode, c.Request.URL.Path) {
 		return
 	}
 	call := attemptCall(c, info)

@@ -2046,7 +2046,7 @@ func TestResponseUsagePolicies(t *testing.T) {
 				Format: string(format), Body: []byte(`{}`), Model: "gpt", Group: "default",
 				Usage: &jsplugin.TokenUsage{InputTokens: 100, CacheReadTokens: 89},
 				Instance: &request_plugin_setting.Instance{ID: "ttl", Name: "TTL", Plugin: "usage-rewrite",
-					Config: []byte(`{"uncachedInputPercent":30,"cacheWriteTtl":"1h"}`)},
+					Config: []byte(`{"uncachedInputTokens":3,"cacheWriteTtl":"1h"}`)},
 			})
 			require.NotNil(t, result.Usage)
 			require.Len(t, result.Steps, 1)
@@ -2061,7 +2061,7 @@ func TestResponseUsagePolicies(t *testing.T) {
 		}
 	})
 	t.Run("explicit multimodal usage remains unchanged", func(t *testing.T) {
-		setInstances(t, `[{"id":"one","name":"One","plugin":"usage-rewrite","enabled":true,"global":true,"config":{"uncachedInputPercent":30}}]`)
+		setInstances(t, `[{"id":"one","name":"One","plugin":"usage-rewrite","enabled":true,"global":true,"config":{"uncachedInputTokens":3}}]`)
 		c := newContext(`{}`, "default")
 		_, _, apiErr := Ingress(c, types.RelayFormatOpenAI)
 		require.Nil(t, apiErr)
@@ -2071,6 +2071,7 @@ func TestResponseUsagePolicies(t *testing.T) {
 		defer finish()
 		raw := &dto.Usage{PromptTokens: 100, CompletionTokens: 2000,
 			PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 89, CachedTokensDetails: &dto.CachedTokenDetails{ImageTokens: common.GetPointer(10)}}}
+		require.Nil(t, Egress(c, info, []byte(`{}`)))
 		assert.Same(t, raw, info.RewriteResponseUsage(raw))
 		assert.Equal(t, "unchecked", stepOf(t, info.RequestPluginSteps, "one", jsplugin.UsageHook).Action)
 		assert.Nil(t, info.ResponseUsageAudit)
@@ -2085,7 +2086,7 @@ func TestResponseUsagePolicies(t *testing.T) {
 			{name: "invalid input", late: dto.Usage{PromptTokens: -1, CompletionTokens: 3000}},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				setInstances(t, `[{"id":"one","name":"One","plugin":"usage-rewrite","enabled":true,"global":true,"config":{"uncachedInputPercent":30,"outputPercent":50}}]`)
+				setInstances(t, `[{"id":"one","name":"One","plugin":"usage-rewrite","enabled":true,"global":true,"config":{"uncachedInputTokens":3,"outputPercent":50}}]`)
 				c := newContext(`{}`, "default")
 				_, _, apiErr := Ingress(c, types.RelayFormatOpenAI)
 				require.Nil(t, apiErr)
@@ -2093,6 +2094,7 @@ func TestResponseUsagePolicies(t *testing.T) {
 				info.RelayMode = relayconstant.RelayModeChatCompletions
 				finish := Reply(c, types.RelayFormatOpenAI, info)
 				defer finish()
+				require.Nil(t, Egress(c, info, []byte(`{}`)))
 				first := info.RewriteResponseUsage(&dto.Usage{PromptTokens: 100, CompletionTokens: 2000, PromptTokensDetails: dto.InputTokenDetails{CachedTokens: 89}})
 				require.True(t, first.ResponseUsageRewritten)
 				assert.Same(t, first, info.RewriteResponseUsage(&tc.late))

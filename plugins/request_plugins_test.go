@@ -59,14 +59,21 @@ func TestUsageRewritePlugin(t *testing.T) {
 		want   jsplugin.TokenUsage
 	}{
 		{"defaults preserve usage", `{}`, initial, initial},
-		{"thirty percent keeps three uncached", `{"uncachedInputPercent":30}`, initial, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 89, CacheWriteTokens: 8}},
-		{"all uncached input becomes writes", `{"uncachedInputPercent":0}`, initial, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 89, CacheWriteTokens: 11}},
-		{"new writes use one-hour lifetime", `{"uncachedInputPercent":30,"cacheWriteTtl":"1h"}`, initial, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 89, CacheWriteTokens: 8, CacheWrite1hTokens: 8}},
-		{"new writes preserve existing lifetimes", `{"uncachedInputPercent":50,"cacheWriteTtl":"12h"}`, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 80, CacheWriteTokens: 10, CacheWrite1hTokens: 4}, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 80, CacheWriteTokens: 15, CacheWrite1hTokens: 4, CacheWrite12hTokens: 5}},
+		{"fixed retention keeps three uncached", `{"uncachedInputTokens":3}`, initial, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 89, CacheWriteTokens: 8}},
+		{"fixed retention stays constant for larger inputs", `{"uncachedInputTokens":3}`, jsplugin.TokenUsage{InputTokens: 145199, OutputTokens: 328, CacheReadTokens: 145024}, jsplugin.TokenUsage{InputTokens: 145199, OutputTokens: 328, CacheReadTokens: 145024, CacheWriteTokens: 172}},
+		{"retention cannot exceed actual uncached input", `{"uncachedInputTokens":3}`, jsplugin.TokenUsage{InputTokens: 91, CacheReadTokens: 89}, jsplugin.TokenUsage{InputTokens: 91, CacheReadTokens: 89}},
+		{"retention equal to uncached input preserves usage", `{"uncachedInputTokens":11}`, initial, initial},
+		{"maximum retention does not inflate usage", `{"uncachedInputTokens":2147483647}`, initial, initial},
+		{"fixed retention overrides legacy percentage", `{"uncachedInputTokens":3,"uncachedInputPercent":0}`, initial, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 89, CacheWriteTokens: 8}},
+		{"explicit zero overrides legacy percentage", `{"uncachedInputTokens":0,"uncachedInputPercent":100}`, initial, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 89, CacheWriteTokens: 11}},
+		{"legacy retention remains compatible", `{"uncachedInputPercent":30}`, initial, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 89, CacheWriteTokens: 8}},
+		{"legacy zero retention remains compatible", `{"uncachedInputPercent":0}`, initial, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 89, CacheWriteTokens: 11}},
+		{"new writes use one-hour lifetime", `{"uncachedInputTokens":3,"cacheWriteTtl":"1h"}`, initial, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 89, CacheWriteTokens: 8, CacheWrite1hTokens: 8}},
+		{"new writes preserve existing lifetimes", `{"uncachedInputTokens":5,"cacheWriteTtl":"12h"}`, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 80, CacheWriteTokens: 10, CacheWrite1hTokens: 4}, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 2000, CacheReadTokens: 80, CacheWriteTokens: 15, CacheWrite1hTokens: 4, CacheWrite12hTokens: 5}},
 		{"output percentage rounds down", `{"outputPercent":30}`, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 11, CacheReadTokens: 89}, jsplugin.TokenUsage{InputTokens: 100, OutputTokens: 3, CacheReadTokens: 89}},
 		{"explicit free output", `{"outputPercent":0}`, initial, jsplugin.TokenUsage{InputTokens: 100, CacheReadTokens: 89}},
-		{"all cache remains unchanged", `{"uncachedInputPercent":0}`, jsplugin.TokenUsage{InputTokens: 100, CacheReadTokens: 90, CacheWriteTokens: 10}, jsplugin.TokenUsage{InputTokens: 100, CacheReadTokens: 90, CacheWriteTokens: 10}},
-		{"zero quantities stay zero", `{"uncachedInputPercent":0,"outputPercent":0}`, jsplugin.TokenUsage{}, jsplugin.TokenUsage{}},
+		{"all cache remains unchanged", `{"uncachedInputTokens":3}`, jsplugin.TokenUsage{InputTokens: 100, CacheReadTokens: 90, CacheWriteTokens: 10}, jsplugin.TokenUsage{InputTokens: 100, CacheReadTokens: 90, CacheWriteTokens: 10}},
+		{"zero quantities stay zero", `{"uncachedInputTokens":3,"outputPercent":0}`, jsplugin.TokenUsage{}, jsplugin.TokenUsage{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			config, err := plugin.ValidateConfig(json.RawMessage(tc.config))
@@ -76,7 +83,7 @@ func TestUsageRewritePlugin(t *testing.T) {
 			assert.Equal(t, tc.want, result.Usage)
 		})
 	}
-	for _, config := range []string{`{"uncachedInputPercent":-1}`, `{"uncachedInputPercent":101}`, `{"uncachedInputPercent":0.5}`, `{"outputPercent":101}`, `{"cacheWriteTtl":"forever"}`} {
+	for _, config := range []string{`{"uncachedInputTokens":-1}`, `{"uncachedInputTokens":2147483648}`, `{"uncachedInputTokens":0.5}`, `{"uncachedInputTokens":"3"}`, `{"uncachedInputTokens":null}`, `{"uncachedInputPercent":-1}`, `{"uncachedInputPercent":101}`, `{"uncachedInputPercent":0.5}`, `{"outputPercent":101}`, `{"cacheWriteTtl":"forever"}`} {
 		_, err := plugin.ValidateConfig(json.RawMessage(config))
 		require.Error(t, err, config)
 	}

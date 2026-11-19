@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	_ "github.com/QuantumNous/new-api/plugins"
+	"github.com/QuantumNous/new-api/relay"
 	"github.com/QuantumNous/new-api/relay/channel/claude"
 	"github.com/QuantumNous/new-api/relay/channel/openai"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -23,6 +25,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/config"
+	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/request_plugin_setting"
 	hosttypes "github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
@@ -37,6 +40,14 @@ import (
 // log together. No schema, SQL, or dialect behavior is changed by the policy.
 func TestResponseUsageAccounting(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	settings := model_setting.GetGlobalSettings()
+	previousPassThrough := settings.PassThroughRequestEnabled
+	settings.PassThroughRequestEnabled = false
+	t.Cleanup(func() { settings.PassThroughRequestEnabled = previousPassThrough })
+	previousTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = previousTimeout })
+	service.InitHttpClient()
 	plugin, err := jsplugin.DefaultRegistry.Register(`export const meta = {apiVersion: 1, key: "rp-usage-accounting", name: "Accounting policy", version: "1.0.0", author: {name: "Test"}};
 export function usage(ctx) { return {action: "continue", usage: ctx.config.patch}; }`, jsplugin.Options{})
 	require.NoError(t, err)
@@ -64,16 +75,30 @@ export function usage(ctx) { return {action: "continue", usage: ctx.config.patch
 	for index, tc := range []struct {
 		name, plugin, config string
 		claude               bool
+		responses, stream    bool
+		passthrough, bound   bool
 		input, read, write   int
 		output, cost         int
 	}{
-		{name: "OpenAI cache reclassification", plugin: "usage-rewrite", config: `{"uncachedInputPercent":30,"outputPercent":50}`, input: 100, read: 89, write: 8, output: 1000, cost: 30278},
-		{name: "Claude cache reclassification", plugin: "usage-rewrite", config: `{"uncachedInputPercent":30,"outputPercent":50}`, claude: true, input: 100, read: 89, write: 8, output: 1000, cost: 30278},
+		{name: "OpenAI fixed uncached retention", plugin: "usage-rewrite", config: `{"uncachedInputTokens":3,"outputPercent":50}`, input: 100, read: 89, write: 8, output: 1000, cost: 30278},
+		{name: "Claude fixed uncached retention", plugin: "usage-rewrite", config: `{"uncachedInputTokens":3,"outputPercent":50}`, claude: true, input: 100, read: 89, write: 8, output: 1000, cost: 30278},
+		{name: "Responses group rule after request preparation", plugin: "usage-rewrite", config: `{"uncachedInputTokens":3,"outputPercent":50}`, responses: true, input: 100, read: 89, write: 8, output: 1000, cost: 30278},
+		{name: "Responses stream group rule after request preparation", plugin: "usage-rewrite", config: `{"uncachedInputTokens":3,"outputPercent":50}`, responses: true, stream: true, input: 100, read: 89, write: 8, output: 1000, cost: 30278},
+		{name: "Responses passthrough channel rule after request preparation", plugin: "usage-rewrite", config: `{"uncachedInputTokens":3,"outputPercent":50}`, responses: true, stream: true, passthrough: true, bound: true, input: 100, read: 89, write: 8, output: 1000, cost: 30278},
+		{name: "Responses legacy percentage after request preparation", plugin: "usage-rewrite", config: `{"uncachedInputPercent":30,"outputPercent":50}`, responses: true, input: 100, read: 89, write: 8, output: 1000, cost: 30278},
 		{name: "changed input keeps real context tier", plugin: "rp-usage-accounting", config: `{"patch":{"inputTokens":50,"cacheReadTokens":39,"cacheWriteTokens":8,"outputTokens":1000}}`, input: 50, read: 39, write: 8, output: 1000, cost: 30178},
 		{name: "explicit zero fully refunds reservation", plugin: "rp-usage-accounting", config: `{"patch":{"inputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0,"outputTokens":0}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			instances := fmt.Sprintf(`[{"id":"rewrite","name":"Rewrite","plugin":%q,"enabled":true,"global":true,"config":%s}]`, tc.plugin, tc.config)
+			const group = "伪装key"
+			scope := `"global":true`
+			if tc.responses {
+				scope = `"groups":["` + group + `"]`
+			}
+			if tc.bound {
+				scope = `"global":false`
+			}
+			instances := fmt.Sprintf(`[{"id":"rewrite","name":"Rewrite","plugin":%q,"enabled":true,%s,"config":%s}]`, tc.plugin, scope, tc.config)
 			require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{request_plugin_setting.InstancesOption: instances}))
 			t.Cleanup(func() {
 				require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{request_plugin_setting.InstancesOption: "[]"}))
@@ -92,13 +117,15 @@ export function usage(ctx) { return {action: "continue", usage: ctx.config.patch
 			format := types.RelayFormatOpenAI
 			if tc.claude {
 				format = types.RelayFormatClaude
+			} else if tc.responses {
+				format = types.RelayFormatOpenAIResponses
 			}
 			info := &relaycommon.RelayInfo{OriginModelName: "gpt", ChannelMeta: &relaycommon.ChannelMeta{ChannelType: 1, UpstreamModelName: "gpt-up"}}
 			info.ChannelId = channel.Id
 			info.RelayFormat, info.FinalRequestRelayFormat = format, format
 			info.RelayMode = relayconstant.RelayModeChatCompletions
 			info.UserId, info.TokenId, info.TokenKey = user.Id, token.Id, token.Key
-			info.UserGroup, info.UsingGroup = "default", "default"
+			info.UserGroup, info.UsingGroup = group, group
 			info.UserSetting = dto.UserSetting{BillingPreference: "wallet_only"}
 			info.ForcePreConsume, info.StartTime = true, time.Now()
 			info.FirstResponseTime = info.StartTime
@@ -109,10 +136,24 @@ export function usage(ctx) { return {action: "continue", usage: ctx.config.patch
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
 			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{}`))
-			c.Set("group", "default")
+			c.Set("group", group)
 			c.Set("id", user.Id)
 			c.Set("token_id", token.Id)
 			c.Set("token_name", token.Name)
+			common.SetContextKey(c, constant.ContextKeyOriginalModel, "gpt")
+			common.SetContextKey(c, constant.ContextKeyChannelId, channel.Id)
+			common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+			channelSettings := dto.ChannelSettings{PassThroughBodyEnabled: tc.passthrough}
+			if tc.bound {
+				channelSettings.RequestPlugins = []string{"rewrite"}
+			}
+			common.SetContextKey(c, constant.ContextKeyChannelSetting, channelSettings)
+			if tc.responses {
+				info.RelayMode = relayconstant.RelayModeResponses
+				c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(fmt.Sprintf(`{"model":"gpt","input":"hello","stream":%t}`, tc.stream)))
+				c.Request.Header.Set("Content-Type", "application/json")
+				t.Cleanup(func() { common.CleanupBodyStorage(c) })
+			}
 			_, _, apiErr := requestplugin.Ingress(c, format)
 			require.Nil(t, apiErr)
 			require.Nil(t, service.PreConsumeBilling(c, reservation, info))
@@ -126,9 +167,40 @@ export function usage(ctx) { return {action: "continue", usage: ctx.config.patch
 			}
 			resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(payload))}
 			var usage *dto.Usage
-			if tc.claude {
+			if tc.responses {
+				payload = `{"id":"r1","object":"response","model":"gpt","status":"completed","output":[],"usage":{"input_tokens":100,"output_tokens":2000,"total_tokens":2100,"input_tokens_details":{"cached_tokens":89}},"vendor_extra":{"keep":true}}`
+				if tc.stream {
+					payload = "data: {\"type\":\"response.completed\",\"response\":" + payload + "}\n\n"
+				}
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if tc.stream {
+						w.Header().Set("Content-Type", "text/event-stream")
+					} else {
+						w.Header().Set("Content-Type", "application/json")
+					}
+					_, _ = io.WriteString(w, payload)
+				}))
+				t.Cleanup(upstream.Close)
+				common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, upstream.URL)
+				var request dto.OpenAIResponsesRequest
+				request.Model, request.Input = "gpt", []byte(`"hello"`)
+				request.Stream = common.GetPointer(tc.stream)
+				info.Request, info.IsStream = &request, tc.stream
+				adaptor, body, closer, prepareErr := relay.PrepareResponsesRequest(c, info, &request)
+				require.Nil(t, prepareErr)
+				t.Cleanup(func() { require.NoError(t, closer.Close()) })
+				upstreamResponse, err := adaptor.DoRequest(c, info, body)
+				require.NoError(t, err)
+				responseUsage, responseErr := adaptor.DoResponse(c, upstreamResponse.(*http.Response), info)
+				require.Nil(t, responseErr)
+				usage, apiErr = responseUsage.(*dto.Usage), responseErr
+			} else if tc.claude {
+				info.InitChannelMeta(c)
+				require.Nil(t, requestplugin.Egress(c, info, []byte(`{}`)))
 				usage, apiErr = claude.ClaudeHandler(c, resp, info)
 			} else {
+				info.InitChannelMeta(c)
+				require.Nil(t, requestplugin.Egress(c, info, []byte(`{}`)))
 				usage, apiErr = openai.OpenaiHandler(c, info, resp)
 			}
 			finish()
@@ -141,7 +213,16 @@ export function usage(ctx) { return {action: "continue", usage: ctx.config.patch
 			assert.Equal(t, tc.read, canonical.PromptTokensDetails.CachedTokens)
 			assert.Equal(t, tc.write, canonical.PromptTokensDetails.CacheCreationTokensTotal())
 			wire := recorder.Body.Bytes()
-			if tc.claude {
+			if tc.responses {
+				if tc.stream {
+					wire = []byte(strings.TrimSpace(strings.TrimPrefix(string(wire), "data: ")))
+					wire = []byte(gjson.GetBytes(wire, "response").Raw)
+				}
+				assert.EqualValues(t, tc.input, gjson.GetBytes(wire, "usage.input_tokens").Int())
+				assert.EqualValues(t, tc.read, gjson.GetBytes(wire, "usage.input_tokens_details.cached_tokens").Int())
+				assert.EqualValues(t, tc.write, gjson.GetBytes(wire, "usage.input_tokens_details.cache_write_tokens").Int())
+				assert.EqualValues(t, tc.output, gjson.GetBytes(wire, "usage.output_tokens").Int())
+			} else if tc.claude {
 				assert.EqualValues(t, tc.input-tc.read-tc.write, gjson.GetBytes(wire, "usage.input_tokens").Int())
 				assert.EqualValues(t, tc.read, gjson.GetBytes(wire, "usage.cache_read_input_tokens").Int())
 				assert.EqualValues(t, tc.write, gjson.GetBytes(wire, "usage.cache_creation_input_tokens").Int())
