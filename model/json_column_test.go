@@ -139,10 +139,11 @@ func TestJSONColumnDatabaseRoundTrip(t *testing.T) {
 			sqlDB.SetMaxOpenConns(1)
 			t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
 			const tableName = "json_codec_round_trip"
-			table := db.Model(&row{}).Table(tableName).Session(&gorm.Session{})
+			table := db.Model(&row{}).Table(tableName)
 			if dialect == "mysql" {
 				table = table.Set("gorm:table_options", "CHARSET=utf8mb4")
 			}
+			table = table.Session(&gorm.Session{})
 			require.NoError(t, table.AutoMigrate(&row{}))
 			t.Cleanup(func() { require.NoError(t, db.Migrator().DropTable(tableName)) })
 			var version string
