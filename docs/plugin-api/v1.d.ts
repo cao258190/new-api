@@ -262,10 +262,10 @@ export type TransformEffect =
   | {type: "media.reencode"; media: number; format: "auto" | "jpeg" | "png"; quality?: number; maxSide?: number}
   /** Lossless WebP; it takes no quality. */
   | {type: "media.reencode"; media: number; format: "webp"; maxSide?: number}
-  /** Egress only. Send upstream immediately and schedule a native start; delayMs is 0..60000, default 0, and yields to upstream bytes. outputItem adds an empty Responses message and shifts real output indices; default false. Unsupported transports/endpoints are no-ops; invalid on tasks. */
-  | {type: "stream.start"; timing: "before_upstream"; delayMs?: number; outputItem?: boolean}
+  /** Egress only. Send upstream immediately and schedule a native start; delayMs is 0..60000, default 0, and yields to upstream bytes. outputItem adds an empty Responses message and shifts real output indices; default false. completeOutputItem requires outputItem: true and closes that item immediately to trigger chained forwarding, possibly limiting downstream retries; default false. Unsupported transports/endpoints are no-ops; invalid on tasks. */
+  | {type: "stream.start"; timing: "before_upstream"; delayMs?: number; outputItem?: boolean; completeOutputItem?: boolean}
   /** Send after successful streaming HTTP response headers; no delay is allowed. */
-  | {type: "stream.start"; timing: "after_connect"; outputItem?: boolean};
+  | {type: "stream.start"; timing: "after_connect"; outputItem?: boolean; completeOutputItem?: boolean};
 /** What matched, by rule and count, never the matched text. rule, category and path are at most 256 characters. */
 export interface TransformFinding {rule: string; category?: string; path?: string; count: number}
 /** At most 64 findings. code matches ^[a-z0-9_.-]{1,64}$; message and ruleId are at most 256 characters. notice is shown to the user in the log as it is: at most 8 locales of at most 200 characters. */

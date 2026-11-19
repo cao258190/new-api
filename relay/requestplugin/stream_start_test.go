@@ -104,6 +104,9 @@ func startFixture(t *testing.T, timing string, responses bool, extra ...string) 
 	if _, configured := savedConfig["responsesOutputItem"]; !configured {
 		savedConfig["responsesOutputItem"] = false
 	}
+	if _, configured := savedConfig["multiHopCompatibility"]; !configured {
+		savedConfig["multiHopCompatibility"] = false
+	}
 	encodedConfig, err := common.Marshal(savedConfig)
 	require.NoError(t, err)
 	pluginConfig = string(encodedConfig)
@@ -244,6 +247,8 @@ func TestStreamStartDelayConfig(t *testing.T) {
 		{"zero restores immediate emission", `{"timing":"before_upstream","delayMinSeconds":0,"delayMaxSeconds":0}`, 0, 0},
 		{"after connection ignores hidden delay", `{"timing":"after_connect","delayMinSeconds":1,"delayMaxSeconds":2}`, -1, -1},
 		{"output item can be disabled", `{"timing":"after_connect","responsesOutputItem":false}`, -1, -1},
+		{"multi-hop can be disabled", `{"timing":"after_connect","multiHopCompatibility":false}`, -1, -1},
+		{"disabled output item ignores saved multi-hop mode", `{"timing":"after_connect","responsesOutputItem":false,"multiHopCompatibility":true}`, -1, -1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			validated, err := plugin.ValidateConfig([]byte(tc.config))
@@ -256,6 +261,7 @@ func TestStreamStartDelayConfig(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, effects, 1)
 			assert.Equal(t, !gjson.Get(tc.config, "responsesOutputItem").Exists() || gjson.Get(tc.config, "responsesOutputItem").Bool(), effects[0].OutputItem)
+			assert.Equal(t, effects[0].OutputItem && (!gjson.Get(tc.config, "multiHopCompatibility").Exists() || gjson.Get(tc.config, "multiHopCompatibility").Bool()), effects[0].CompleteOutputItem)
 			if tc.minMS < 0 {
 				assert.Equal(t, "after_connect", effects[0].Timing)
 				assert.False(t, gjson.GetBytes(result.Effects, "0.delayMs").Exists())
@@ -269,6 +275,7 @@ func TestStreamStartDelayConfig(t *testing.T) {
 	for _, raw := range []string{
 		`{"delayMinSeconds":-1}`, `{"delayMaxSeconds":61}`, `{"delayMinSeconds":"1"}`,
 		`{"delayMaxSeconds":null}`, `{"delayMinSeconds":3,"delayMaxSeconds":2}`,
+		`{"multiHopCompatibility":"true"}`, `{"multiHopCompatibility":null}`,
 	} {
 		_, err := plugin.ValidateConfig([]byte(raw))
 		require.Error(t, err, raw)
@@ -545,93 +552,116 @@ func TestStreamStartResponsesOutputItem(t *testing.T) {
 		{"reasoning", `{"id":"rs_real","type":"reasoning","status":"completed","summary":[{"type":"summary_text","text":"思考内容"}],"encrypted_content":"preserved"}`, "response.reasoning_summary_text.delta"},
 		{"tool", `{"id":"fc_real","type":"function_call","status":"completed","call_id":"call_real","name":"weather","arguments":"{}"}`, "response.function_call_arguments.delta"},
 	} {
-		for _, timing := range []string{"before_upstream", "after_connect"} {
-			t.Run(tc.name+"/"+timing, func(t *testing.T) {
-				c, info, rec, finish := startFixture(t, fmt.Sprintf(`{"timing":%q,"delayMinSeconds":0,"delayMaxSeconds":0,"responsesOutputItem":true}`, timing), true)
-				defer finish()
-				added, err := sjson.Set(tc.item, "status", "in_progress")
-				require.NoError(t, err)
-				itemID := gjson.Get(tc.item, "id").Str
-				payload := fmt.Sprintf("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_real\",\"output\":[]}}\n\n"+
-					"data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":%s}\n\n"+
-					"data: {\"type\":%q,\"output_index\":0,\"item_id\":%q,\"delta\":\"真实内容\",\"vendor_extra\":true}\n\n"+
-					"data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":%s}\n\n"+
-					"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_real\",\"status\":\"completed\",\"output\":[%s],\"usage\":{\"input_tokens\":100,\"output_tokens\":20,\"total_tokens\":120}}}\n\n",
-					added, tc.deltaType, itemID, tc.item, tc.item)
-				service.GetHttpClient().Transport = startTransport(func(req *http.Request) (*http.Response, error) {
-					return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Request: req, Body: io.NopCloser(strings.NewReader(payload))}, nil
-				})
-				resp, err := startRequest(t, c, info)
-				require.NoError(t, err)
-				prefix := startEvents(rec.snapshot())
-				require.Len(t, prefix, 2, "semantic event is flushed before the upstream body is read")
-				assert.Equal(t, "response.created", prefix[0].Get("type").Str)
-				assert.Equal(t, "response.output_item.added", prefix[1].Get("type").Str)
-				assert.Equal(t, "[]", prefix[1].Get("item.content").Raw)
-				assert.Equal(t, "in_progress", prefix[1].Get("item.status").Str)
-				usage, apiErr := openai.OaiResponsesStreamHandler(c, info, resp)
-				require.Nil(t, apiErr)
-				require.Nil(t, requestplugin.FinishStreamStart(c))
-				assert.Equal(t, 100, usage.PromptTokens)
-				assert.Equal(t, 20, usage.CompletionTokens)
-				events := startEvents(rec.snapshot())
-				require.Len(t, events, 7)
-				for i, event := range events {
-					assert.Equal(t, int64(i), event.Get("sequence_number").Int())
-				}
-				placeholder := events[2].Get("item")
-				assert.Equal(t, "response.output_item.done", events[2].Get("type").Str)
-				assert.Equal(t, prefix[1].Get("item.id").Str, placeholder.Get("id").Str)
-				assert.Equal(t, "completed", placeholder.Get("status").Str)
-				assert.Equal(t, int64(1), events[3].Get("output_index").Int())
-				assert.JSONEq(t, added, events[3].Get("item").Raw)
-				assert.Equal(t, int64(1), events[4].Get("output_index").Int())
-				assert.Equal(t, itemID, events[4].Get("item_id").Str)
-				assert.Equal(t, "真实内容", events[4].Get("delta").Str)
-				assert.True(t, events[4].Get("vendor_extra").Bool())
-				assert.JSONEq(t, tc.item, events[5].Get("item").Raw)
-				assert.JSONEq(t, placeholder.Raw, events[6].Get("response.output.0").Raw)
-				assert.JSONEq(t, tc.item, events[6].Get("response.output.1").Raw)
-				assert.Equal(t, int64(120), events[6].Get("response.usage.total_tokens").Int())
+		for _, multiHop := range []bool{false, true} {
+			for _, timing := range []string{"before_upstream", "after_connect"} {
+				t.Run(fmt.Sprintf("%s/%s/multiHop=%t", tc.name, timing, multiHop), func(t *testing.T) {
+					c, info, rec, finish := startFixture(t, fmt.Sprintf(`{"timing":%q,"delayMinSeconds":0,"delayMaxSeconds":0,"responsesOutputItem":true,"multiHopCompatibility":%t}`, timing, multiHop), true)
+					defer finish()
+					added, err := sjson.Set(tc.item, "status", "in_progress")
+					require.NoError(t, err)
+					itemID := gjson.Get(tc.item, "id").Str
+					payload := fmt.Sprintf("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_real\",\"output\":[]}}\n\n"+
+						"data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":%s}\n\n"+
+						"data: {\"type\":%q,\"output_index\":0,\"item_id\":%q,\"delta\":\"真实内容\",\"vendor_extra\":true}\n\n"+
+						"data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":%s}\n\n"+
+						"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_real\",\"status\":\"completed\",\"output\":[%s],\"usage\":{\"input_tokens\":100,\"output_tokens\":20,\"total_tokens\":120}}}\n\n",
+						added, tc.deltaType, itemID, tc.item, tc.item)
+					service.GetHttpClient().Transport = startTransport(func(req *http.Request) (*http.Response, error) {
+						return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Request: req, Body: io.NopCloser(strings.NewReader(payload))}, nil
+					})
+					resp, err := startRequest(t, c, info)
+					require.NoError(t, err)
+					prefix := startEvents(rec.snapshot())
+					prefixCount := 2
+					if multiHop {
+						prefixCount = 3
+					}
+					require.Len(t, prefix, prefixCount, "early events are flushed before the upstream body is read")
+					assert.Equal(t, "response.created", prefix[0].Get("type").Str)
+					assert.Equal(t, "response.output_item.added", prefix[1].Get("type").Str)
+					assert.Equal(t, "[]", prefix[1].Get("item.content").Raw)
+					assert.Equal(t, "in_progress", prefix[1].Get("item.status").Str)
+					if multiHop {
+						assert.Equal(t, "response.output_item.done", prefix[2].Get("type").Str)
+						assert.Equal(t, prefix[1].Get("item.id").Str, prefix[2].Get("item.id").Str)
+						assert.Equal(t, "completed", prefix[2].Get("item.status").Str)
+						assert.Equal(t, "[]", prefix[2].Get("item.content").Raw)
+					}
+					usage, apiErr := openai.OaiResponsesStreamHandler(c, info, resp)
+					require.Nil(t, apiErr)
+					require.Nil(t, requestplugin.FinishStreamStart(c))
+					assert.Equal(t, 100, usage.PromptTokens)
+					assert.Equal(t, 20, usage.CompletionTokens)
+					events := startEvents(rec.snapshot())
+					require.Len(t, events, 7)
+					for i, event := range events {
+						assert.Equal(t, int64(i), event.Get("sequence_number").Int())
+					}
+					placeholder := events[2].Get("item")
+					assert.Equal(t, "response.output_item.done", events[2].Get("type").Str)
+					assert.Equal(t, prefix[1].Get("item.id").Str, placeholder.Get("id").Str)
+					assert.Equal(t, "completed", placeholder.Get("status").Str)
+					assert.Equal(t, int64(1), events[3].Get("output_index").Int())
+					assert.JSONEq(t, added, events[3].Get("item").Raw)
+					assert.Equal(t, int64(1), events[4].Get("output_index").Int())
+					assert.Equal(t, itemID, events[4].Get("item_id").Str)
+					assert.Equal(t, "真实内容", events[4].Get("delta").Str)
+					assert.True(t, events[4].Get("vendor_extra").Bool())
+					assert.JSONEq(t, tc.item, events[5].Get("item").Raw)
+					assert.JSONEq(t, placeholder.Raw, events[6].Get("response.output.0").Raw)
+					assert.JSONEq(t, tc.item, events[6].Get("response.output.1").Raw)
+					assert.Equal(t, int64(120), events[6].Get("response.usage.total_tokens").Int())
 
-				// A later request must not send gateway-only empty items upstream,
-				// including after disabling the plugin. Real text and IDs survive.
-				require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{request_plugin_setting.InstancesOption: "[]"}))
-				request, _ := gin.CreateTestContext(httptest.NewRecorder())
-				body := fmt.Sprintf(`{"model":"gpt-test","input":[%s,%s,{"type":"item_reference","id":%q},{"type":"message","id":%q,"role":"assistant","content":[{"type":"output_text","text":"保留"}]},{"type":"item_reference","id":%q},{"role":"user","content":"继续"}]}`, placeholder.Raw, tc.item, placeholder.Get("id").Str, placeholder.Get("id").Str, itemID)
-				request.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
-				request.Request.Header.Set("Content-Type", "application/json")
-				t.Cleanup(func() { common.CleanupBodyStorage(request) })
-				changed, apiErr := service.ResolveResponseAlias(request, "gpt-test")
-				require.Nil(t, apiErr)
-				assert.True(t, changed)
-				storage, err := common.GetBodyStorage(request)
-				require.NoError(t, err)
-				raw, err := storage.Bytes()
-				require.NoError(t, err)
-				input := gjson.GetBytes(raw, "input").Array()
-				require.Len(t, input, 4)
-				assert.JSONEq(t, tc.item, input[0].Raw)
-				assert.Equal(t, "保留", input[1].Get("content.0.text").Str)
-				assert.Equal(t, itemID, input[2].Get("id").Str)
-				assert.Equal(t, "继续", input[3].Get("content").Str)
-				changed, apiErr = service.ResolveResponseAlias(request, "gpt-test")
-				require.Nil(t, apiErr)
-				assert.False(t, changed, "input cleanup is idempotent")
-			})
+					// A later request must not send gateway-only empty items upstream,
+					// including after disabling the plugin. Real text and IDs survive.
+					require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{request_plugin_setting.InstancesOption: "[]"}))
+					request, _ := gin.CreateTestContext(httptest.NewRecorder())
+					body := fmt.Sprintf(`{"model":"gpt-test","input":[%s,%s,{"type":"item_reference","id":%q},{"type":"message","id":%q,"role":"assistant","content":[{"type":"output_text","text":"保留"}]},{"type":"item_reference","id":%q},{"role":"user","content":"继续"}]}`, placeholder.Raw, tc.item, placeholder.Get("id").Str, placeholder.Get("id").Str, itemID)
+					request.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+					request.Request.Header.Set("Content-Type", "application/json")
+					t.Cleanup(func() { common.CleanupBodyStorage(request) })
+					changed, apiErr := service.ResolveResponseAlias(request, "gpt-test")
+					require.Nil(t, apiErr)
+					assert.True(t, changed)
+					storage, err := common.GetBodyStorage(request)
+					require.NoError(t, err)
+					raw, err := storage.Bytes()
+					require.NoError(t, err)
+					input := gjson.GetBytes(raw, "input").Array()
+					require.Len(t, input, 4)
+					assert.JSONEq(t, tc.item, input[0].Raw)
+					assert.Equal(t, "保留", input[1].Get("content.0.text").Str)
+					assert.Equal(t, itemID, input[2].Get("id").Str)
+					assert.Equal(t, "继续", input[3].Get("content").Str)
+					changed, apiErr = service.ResolveResponseAlias(request, "gpt-test")
+					require.Nil(t, apiErr)
+					assert.False(t, changed, "input cleanup is idempotent")
+				})
+			}
 		}
 	}
-	t.Run("failure does not publish a completed empty item", func(t *testing.T) {
-		c, info, rec, finish := startFixture(t, `{"timing":"before_upstream","delayMinSeconds":0,"delayMaxSeconds":0,"responsesOutputItem":true}`, true)
-		defer finish()
-		startEmptyRequest(t, c, info)
-		assert.False(t, c.GetBool("request_plugin_stream_payload_sent"), "the empty early item alone leaves retries available")
-		require.True(t, requestplugin.StreamStartFailed(c, types.NewErrorWithStatusCode(errors.New("upstream unavailable"), types.ErrorCodeBadResponse, 502)))
-		events := startEvents(rec.snapshot())
-		require.Len(t, events, 3)
-		assert.Equal(t, "response.failed", events[2].Get("type").Str)
-		assert.Equal(t, "incomplete", events[2].Get("response.output.0.status").Str)
-	})
+	for _, multiHop := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failure/multiHop=%t", multiHop), func(t *testing.T) {
+			c, info, rec, finish := startFixture(t, fmt.Sprintf(`{"timing":"before_upstream","delayMinSeconds":0,"delayMaxSeconds":0,"responsesOutputItem":true,"multiHopCompatibility":%t}`, multiHop), true)
+			defer finish()
+			startEmptyRequest(t, c, info)
+			assert.False(t, c.GetBool("request_plugin_stream_payload_sent"), "empty early events leave host retries available")
+			require.True(t, requestplugin.StreamStartFailed(c, types.NewErrorWithStatusCode(errors.New("upstream unavailable"), types.ErrorCodeBadResponse, 502)))
+			events := startEvents(rec.snapshot())
+			failureIndex := 2
+			wantStatus := "incomplete"
+			if multiHop {
+				failureIndex = 3
+				wantStatus = "completed"
+			}
+			require.Len(t, events, failureIndex+1)
+			if multiHop {
+				assert.Equal(t, "response.output_item.done", events[2].Get("type").Str)
+			}
+			assert.Equal(t, "response.failed", events[failureIndex].Get("type").Str)
+			assert.Equal(t, wantStatus, events[failureIndex].Get("response.output.0.status").Str)
+		})
+	}
 }
 
 func TestStreamStartUsesClientProtocolAfterConversion(t *testing.T) {
@@ -705,6 +735,10 @@ func TestStreamStartExclusionsAndEffectValidation(t *testing.T) {
 		`[{"type":"stream.start","timing":"before_upstream","delayMs":1.5}]`, `[{"type":"stream.start","timing":"before_upstream","delayMs":null}]`,
 		`[{"type":"stream.start","timing":"before_upstream","delayMs":"1000"}]`, `[{"type":"stream.start","timing":"after_connect","delayMs":0}]`,
 		`[{"type":"stream.start","timing":"after_connect","outputItem":null}]`, `[{"type":"stream.start","timing":"after_connect","outputItem":"true"}]`,
+		`[{"type":"stream.start","timing":"after_connect","outputItem":true,"completeOutputItem":null}]`,
+		`[{"type":"stream.start","timing":"after_connect","outputItem":true,"completeOutputItem":"true"}]`,
+		`[{"type":"stream.start","timing":"after_connect","completeOutputItem":true}]`,
+		`[{"type":"stream.start","timing":"after_connect","outputItem":false,"completeOutputItem":true}]`,
 	} {
 		_, err := requestpatch.DecodeTransformEffects([]byte(raw), requestpatch.EffectStreamStart)
 		require.Error(t, err)

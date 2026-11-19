@@ -70,6 +70,8 @@ type Effect struct {
 	DelayMS int
 	// OutputItem adds an empty Responses output item for semantic-event clients.
 	OutputItem bool
+	// CompleteOutputItem closes the empty item immediately for chained gateways.
+	CompleteOutputItem bool
 }
 
 // Operation is one RFC 6902 operation.
@@ -117,7 +119,7 @@ func decodeEffects(data []byte, allowed ...string) ([]Effect, error) {
 		}
 		switch effect.Type {
 		case EffectStreamStart:
-			if err = onlyMembers(members, fmt.Sprintf("effects[%d]", index), "type", "timing", "delayMs", "outputItem"); err != nil {
+			if err = onlyMembers(members, fmt.Sprintf("effects[%d]", index), "type", "timing", "delayMs", "outputItem", "completeOutputItem"); err != nil {
 				return nil, err
 			}
 			if err = decodeString(members["timing"], &effect.Timing); err != nil || !slices.Contains([]string{"before_upstream", "after_connect"}, effect.Timing) {
@@ -132,6 +134,14 @@ func decodeEffects(data []byte, allowed ...string) ([]Effect, error) {
 				if isNull(raw) || common.Unmarshal(raw, &effect.OutputItem) != nil {
 					return nil, fmt.Errorf("effects[%d].outputItem must be a boolean", index)
 				}
+			}
+			if raw, ok := members["completeOutputItem"]; ok {
+				if isNull(raw) || common.Unmarshal(raw, &effect.CompleteOutputItem) != nil {
+					return nil, fmt.Errorf("effects[%d].completeOutputItem must be a boolean", index)
+				}
+			}
+			if effect.CompleteOutputItem && !effect.OutputItem {
+				return nil, fmt.Errorf("effects[%d].completeOutputItem requires outputItem", index)
 			}
 		case EffectJSONPatch:
 			if err = onlyMembers(members, fmt.Sprintf("effects[%d]", index), "type", "ops"); err != nil {

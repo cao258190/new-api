@@ -28,20 +28,21 @@ import (
 // writer sits below reply checks and above report capture, so it preserves the
 // checks and reports the exact frames the client received, across retries.
 type streamStart struct {
-	c          *gin.Context
-	info       *relaycommon.RelayInfo
-	writer     *streamStartWriter
-	timing     string
-	delay      time.Duration
-	skipped    bool
-	id         string
-	created    int64
-	sent       bool
-	sequence   int
-	upstreamID string
-	outputItem bool
-	itemID     string
-	itemDone   bool
+	c                  *gin.Context
+	info               *relaycommon.RelayInfo
+	writer             *streamStartWriter
+	timing             string
+	delay              time.Duration
+	skipped            bool
+	id                 string
+	created            int64
+	sent               bool
+	sequence           int
+	upstreamID         string
+	outputItem         bool
+	completeOutputItem bool
+	itemID             string
+	itemDone           bool
 }
 
 // streamStartBody restores the byte used to arbitrate the delayed start and
@@ -113,6 +114,7 @@ func (p *Plan) attachStreamStart(c *gin.Context, info *relaycommon.RelayInfo, ef
 	if effect != nil {
 		s.timing, s.delay = effect.Timing, time.Duration(effect.DelayMS)*time.Millisecond
 		s.outputItem = effect.OutputItem
+		s.completeOutputItem = effect.CompleteOutputItem
 	}
 	if !c.GetBool("request_plugin_stream_payload_sent") {
 		s.upstreamID = ""
@@ -286,6 +288,7 @@ func (s *streamStart) start(resp *http.Response) error {
 	}
 	frame := "data: " + string(raw) + "\n\n"
 	sequence := 1
+	itemDone := false
 	if s.info.RelayFormat == types.RelayFormatOpenAIResponses {
 		frame = "event: response.created\n" + frame
 		if s.outputItem {
@@ -297,6 +300,18 @@ func (s *streamStart) start(resp *http.Response) error {
 			}
 			frame += "event: response.output_item.added\ndata: " + string(raw) + "\n\n"
 			sequence++
+			if s.completeOutputItem {
+				raw, err = common.Marshal(gin.H{"type": "response.output_item.done", "sequence_number": sequence,
+					"output_index": 0, "item": gin.H{"id": s.itemID, "type": "message", "role": "assistant", "status": "completed", "content": []any{}}})
+				if err != nil {
+					return err
+				}
+				// Chained gateways may commit their response on item completion;
+				// this opt-in trades their pre-output retries for early forwarding.
+				frame += "event: response.output_item.done\ndata: " + string(raw) + "\n\n"
+				sequence++
+				itemDone = true
+			}
 		}
 	}
 	if _, err = s.c.Writer.WriteString(frame); err != nil {
@@ -307,7 +322,7 @@ func (s *streamStart) start(resp *http.Response) error {
 		return err
 	}
 	s.writer.mu.Lock()
-	s.sent, s.sequence = true, sequence
+	s.sent, s.sequence, s.itemDone = true, sequence, itemDone
 	s.writer.mu.Unlock()
 	s.info.ClientFirstResponseTime, s.info.StreamStartTiming = time.Now(), s.timing
 	return nil

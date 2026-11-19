@@ -7,7 +7,7 @@ export const meta = {
     en: "Send a native start event early for streaming Chat Completions and Responses",
     zh: "为流式 Chat Completions 和 Responses 提前发送协议开始事件",
   },
-  version: "1.2.0",
+  version: "1.3.0",
   author: { name: "QuantumNous" },
   configSchema: {
     type: "object",
@@ -33,6 +33,29 @@ export const meta = {
           vi: "Hỗ trợ cách đo tương thích của sub2api; chế độ đầu ra hiển thị vẫn chờ nội dung",
         },
         default: true,
+      },
+      multiHopCompatibility: {
+        type: "boolean",
+        title: {
+          en: "Multi-hop forwarding compatibility",
+          zh: "多级转发兼容",
+          "zh-TW": "多級轉發相容",
+          fr: "Compatibilité des relais successifs",
+          ja: "多段転送の互換性",
+          ru: "Совместимость цепочки прокси",
+          vi: "Tương thích chuyển tiếp nhiều tầng",
+        },
+        description: {
+          en: "Complete the empty item early to trigger downstream forwarding; may limit sub2api retries",
+          zh: "提前结束空消息项以触发下游转发，可能限制 sub2api 自动重试",
+          "zh-TW": "提前結束空訊息項以觸發下游轉發，可能限制 sub2api 自動重試",
+          fr: "Terminer tôt le message vide pour déclencher le transfert, avec des relances sub2api potentiellement limitées",
+          ja: "空のメッセージを早期に完了して下流へ転送し、sub2api の自動再試行を制限する場合あり",
+          ru: "Раннее завершение пустого сообщения запускает передачу дальше и может ограничить повторы sub2api",
+          vi: "Hoàn tất sớm tin nhắn trống để chuyển tiếp xuống dưới, có thể hạn chế sub2api tự thử lại",
+        },
+        default: true,
+        visibleWhen: { responsesOutputItem: true },
       },
       timing: {
         type: "string",
@@ -111,7 +134,7 @@ export function validateConfig(config) {
   }
 }
 
-/** Queue one host-owned start event; the host checks client protocol and transport. */
+/** Queue the native start and optional empty item completion without adding text. */
 export function egress(ctx, req) {
   if (
     !req.body ||
@@ -128,6 +151,7 @@ export function egress(ctx, req) {
     type: "stream.start",
     timing: config.timing || "after_connect",
     outputItem: config.responsesOutputItem !== false,
+    completeOutputItem: config.responsesOutputItem !== false && config.multiHopCompatibility !== false,
   };
   if (effect.timing === "before_upstream") {
     const minMs = Math.ceil((config.delayMinSeconds ?? 1) * 1000);
