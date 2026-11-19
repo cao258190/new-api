@@ -15,10 +15,10 @@ concurrency:
 # Reuse local frontend and accounting checks; verify affected Go paths on Linux.
 # Production publishing remains a separate, protected registry workflow.
 env:
-  SOURCE_SHA: 2d49ea304bf0fee01c86d042c9771775eb946cfb
+  SOURCE_SHA: 06f3a5dd7e130b48b068e5ef2544a91dea804645
   UPSTREAM_SHA: c9c6da2786b6a0912215127e78e28fbc6650c85f
-  RELEASE_VERSION: custom-v2026.11.19.2-rc.1
-  IMAGE_REF: new-api-staging:custom-v2026.11.19.2-rc.1
+  RELEASE_VERSION: custom-v2026.11.19.3-rc.1
+  IMAGE_REF: new-api-staging:custom-v2026.11.19.3-rc.1
 
 jobs:
   verify:
@@ -130,7 +130,7 @@ jobs:
           jq -n --arg version "$RELEASE_VERSION" --arg image "$IMAGE_REF" --arg id "$image_id" \
             --arg source "$(git rev-parse HEAD)" --arg upstream "$UPSTREAM_SHA" \
             --arg workflow_sha "$GITHUB_SHA" --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            '{version:$version,image_ref:$image,image_id:$id,source_sha:$source,upstream_sha:$upstream,workflow_sha:$workflow_sha,platform:"linux/amd64",run_url:$run_url,purpose:"isolated staging only",tests:{local:"focused backend and frontend checks passed; Windows controller full-suite cleanup failed",linux_regression:"separate Verify response usage regression job; require overall run success",database_matrix:"not rerun: no schema, query or driver changes",image_smoke:"passed"},security_scanning:{enabled:false,policy:"existing isolated staging policy"}}' \
+            '{version:$version,image_ref:$image,image_id:$id,source_sha:$source,upstream_sha:$upstream,workflow_sha:$workflow_sha,platform:"linux/amd64",run_url:$run_url,purpose:"isolated staging only",tests:{local:"root vet/build and jsplugin/plugins/relay/service tests passed; includes real Responses HTTP/SSE/passthrough accounting regression",frontend:"no frontend source changes; config form uses plugin schema",linux_regression:"separate Verify response usage regression job; require overall run success",database_matrix:"not rerun: no schema, query or driver changes",image_smoke:"passed"},security_scanning:{enabled:false,policy:"existing isolated staging policy"}}' \
             > "$RUNNER_TEMP/release/release.json"
           docker save "$IMAGE_REF" | gzip -1 > "$RUNNER_TEMP/release/image.tar.gz"
           cd "$RUNNER_TEMP/release"
