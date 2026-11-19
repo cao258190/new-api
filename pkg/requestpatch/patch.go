@@ -68,6 +68,8 @@ type Effect struct {
 	Timing string
 	// DelayMS delays only a before_upstream start, never the upstream request.
 	DelayMS int
+	// OutputItem adds an empty Responses output item for semantic-event clients.
+	OutputItem bool
 }
 
 // Operation is one RFC 6902 operation.
@@ -115,7 +117,7 @@ func decodeEffects(data []byte, allowed ...string) ([]Effect, error) {
 		}
 		switch effect.Type {
 		case EffectStreamStart:
-			if err = onlyMembers(members, fmt.Sprintf("effects[%d]", index), "type", "timing", "delayMs"); err != nil {
+			if err = onlyMembers(members, fmt.Sprintf("effects[%d]", index), "type", "timing", "delayMs", "outputItem"); err != nil {
 				return nil, err
 			}
 			if err = decodeString(members["timing"], &effect.Timing); err != nil || !slices.Contains([]string{"before_upstream", "after_connect"}, effect.Timing) {
@@ -124,6 +126,11 @@ func decodeEffects(data []byte, allowed ...string) ([]Effect, error) {
 			if raw, ok := members["delayMs"]; ok {
 				if effect.Timing != "before_upstream" || isNull(raw) || decodeInt(raw, &effect.DelayMS) != nil || effect.DelayMS < 0 || effect.DelayMS > 60000 {
 					return nil, fmt.Errorf("effects[%d].delayMs requires before_upstream and an integer from 0 to 60000", index)
+				}
+			}
+			if raw, ok := members["outputItem"]; ok {
+				if isNull(raw) || common.Unmarshal(raw, &effect.OutputItem) != nil {
+					return nil, fmt.Errorf("effects[%d].outputItem must be a boolean", index)
 				}
 			}
 		case EffectJSONPatch:

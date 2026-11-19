@@ -3,6 +3,7 @@ package requestplugin
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -38,6 +39,9 @@ type streamStart struct {
 	sent       bool
 	sequence   int
 	upstreamID string
+	outputItem bool
+	itemID     string
+	itemDone   bool
 }
 
 // streamStartBody restores the byte used to arbitrate the delayed start and
@@ -108,6 +112,7 @@ func (p *Plan) attachStreamStart(c *gin.Context, info *relaycommon.RelayInfo, ef
 	s.info, s.timing, s.delay = info, "", 0
 	if effect != nil {
 		s.timing, s.delay = effect.Timing, time.Duration(effect.DelayMS)*time.Millisecond
+		s.outputItem = effect.OutputItem
 	}
 	if !c.GetBool("request_plugin_stream_payload_sent") {
 		s.upstreamID = ""
@@ -280,8 +285,19 @@ func (s *streamStart) start(resp *http.Response) error {
 		return err
 	}
 	frame := "data: " + string(raw) + "\n\n"
+	sequence := 1
 	if s.info.RelayFormat == types.RelayFormatOpenAIResponses {
 		frame = "event: response.created\n" + frame
+		if s.outputItem {
+			s.itemID = service.ResponseStartItemPrefix + common.GetUUID()
+			raw, err = common.Marshal(gin.H{"type": "response.output_item.added", "sequence_number": sequence,
+				"output_index": 0, "item": gin.H{"id": s.itemID, "type": "message", "role": "assistant", "status": "in_progress", "content": []any{}}})
+			if err != nil {
+				return err
+			}
+			frame += "event: response.output_item.added\ndata: " + string(raw) + "\n\n"
+			sequence++
+		}
 	}
 	if _, err = s.c.Writer.WriteString(frame); err != nil {
 		return err
@@ -291,7 +307,7 @@ func (s *streamStart) start(resp *http.Response) error {
 		return err
 	}
 	s.writer.mu.Lock()
-	s.sent, s.sequence = true, 1
+	s.sent, s.sequence = true, sequence
 	s.writer.mu.Unlock()
 	s.info.ClientFirstResponseTime, s.info.StreamStartTiming = time.Now(), s.timing
 	return nil
@@ -393,8 +409,8 @@ func (w *streamStartWriter) FlushError() error {
 	return w.err
 }
 
-// frame changes only protocol envelope identity and sequence. All content,
-// output-item IDs, tool calls, unknown members and usage remain byte-preserved.
+// frame preserves upstream payloads and item identity. A requested empty item
+// takes index zero; real indices shift together and terminal snapshots include it.
 func (w *streamStartWriter) frame(frame []byte) error {
 	s := w.state
 	var data []byte
@@ -443,6 +459,50 @@ func (w *streamStartWriter) frame(frame []byte) error {
 			data, err = sjson.SetBytes(data, "response_id", s.id)
 			if err != nil {
 				return err
+			}
+		}
+		if s.itemID != "" {
+			kind := root.Get("type").Str
+			failed := kind == "response.failed" || kind == "response.cancelled" || kind == "response.canceled"
+			terminal := failed || kind == "response.completed" || kind == "response.done" || kind == "response.incomplete"
+			item := gin.H{"id": s.itemID, "type": "message", "role": "assistant", "status": "in_progress", "content": []any{}}
+			// Keep pre-output failures retryable downstream. The empty added item
+			// alone is semantic TTFT, but its done event can commit an attempt.
+			if !s.itemDone && !failed && (root.Get("output_index").Exists() || terminal) {
+				item["status"] = "completed"
+				done, marshalErr := common.Marshal(gin.H{"type": "response.output_item.done", "sequence_number": s.sequence, "output_index": 0, "item": item})
+				if marshalErr != nil {
+					return marshalErr
+				}
+				if _, err = fmt.Fprintf(w.ResponseWriter, "event: response.output_item.done\ndata: %s\n\n", done); err != nil {
+					return err
+				}
+				s.sequence++
+				s.itemDone = true
+			}
+			if s.itemDone {
+				item["status"] = "completed"
+			} else if failed {
+				item["status"] = "incomplete"
+			}
+			if index := root.Get("output_index"); index.Exists() {
+				if index.Type != gjson.Number || index.Num < 0 || index.Num >= 1<<53 || index.Num != float64(index.Int()) {
+					return errors.New("invalid output index in response stream")
+				}
+				data, err = sjson.SetBytes(data, "output_index", index.Int()+1)
+				if err != nil {
+					return err
+				}
+			}
+			if output := root.Get("response.output"); output.IsArray() {
+				items := []any{item}
+				for _, upstreamItem := range output.Array() {
+					items = append(items, json.RawMessage(upstreamItem.Raw))
+				}
+				data, err = sjson.SetBytes(data, "response.output", items)
+				if err != nil {
+					return err
+				}
 			}
 		}
 		data, err = sjson.SetBytes(data, "sequence_number", s.sequence)

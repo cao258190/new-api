@@ -7,11 +7,33 @@ export const meta = {
     en: "Send a native start event early for streaming Chat Completions and Responses",
     zh: "为流式 Chat Completions 和 Responses 提前发送协议开始事件",
   },
-  version: "1.1.0",
+  version: "1.2.0",
   author: { name: "QuantumNous" },
   configSchema: {
     type: "object",
     properties: {
+      responsesOutputItem: {
+        type: "boolean",
+        title: {
+          en: "Responses early output item",
+          zh: "Responses 输出项提前包",
+          "zh-TW": "Responses 輸出項提前封包",
+          fr: "Élément de sortie Responses anticipé",
+          ja: "Responses 出力項目の先行送信",
+          ru: "Ранний элемент вывода Responses",
+          vi: "Mục đầu ra Responses gửi sớm",
+        },
+        description: {
+          en: "Support sub2api semantic first-token timing; visible-output timing still waits for content",
+          zh: "适配 sub2api 历史兼容首字统计，真实可见输出仍等待内容",
+          "zh-TW": "支援 sub2api 歷史相容首字統計，真實可見輸出仍等待內容",
+          fr: "Compatible avec le délai sémantique de sub2api ; le mode visible attend le contenu",
+          ja: "sub2api の従来の計測に対応し、可視出力の計測は内容の到着を待機",
+          ru: "Для семантического режима sub2api; видимый вывод по-прежнему ожидает содержимое",
+          vi: "Hỗ trợ cách đo tương thích của sub2api; chế độ đầu ra hiển thị vẫn chờ nội dung",
+        },
+        default: true,
+      },
       timing: {
         type: "string",
         title: { en: "Start event timing", zh: "开始事件发送时机" },
@@ -102,7 +124,11 @@ export function egress(ctx, req) {
   // ctx.format describes the converted upstream body. Gemini has no stream
   // member; the host checks whether the client uses a supported HTTP stream.
   const config = ctx.config || {};
-  const effect = { type: "stream.start", timing: config.timing || "after_connect" };
+  const effect = {
+    type: "stream.start",
+    timing: config.timing || "after_connect",
+    outputItem: config.responsesOutputItem !== false,
+  };
   if (effect.timing === "before_upstream") {
     const minMs = Math.ceil((config.delayMinSeconds ?? 1) * 1000);
     const maxMs = Math.max(minMs, Math.floor((config.delayMaxSeconds ?? 2) * 1000));

@@ -32,6 +32,10 @@ const responseAliasContextKey = "response_start_continuation"
 // API token, and remain resolvable for 30 days after the last response event.
 const ResponseAliasPrefix = "resp_na_start_"
 
+// ResponseStartItemPrefix marks empty gateway messages. They are discarded
+// when replayed as input because no upstream account owns these item IDs.
+const ResponseStartItemPrefix = "msg_na_start_"
+
 type responseAlias struct {
 	Upstream string `json:"upstream"`
 	Model    string `json:"model"`
@@ -113,9 +117,45 @@ func ResolveResponseAlias(c *gin.Context, modelName string) (bool, *types.NewAPI
 	if err != nil {
 		return false, nil
 	}
+	changed := false
+	input := gjson.GetBytes(body, "input")
+	if input.IsArray() {
+		items := input.Array()
+		for i := len(items) - 1; i >= 0; i-- {
+			item := items[i]
+			if !strings.HasPrefix(item.Get("id").Str, ResponseStartItemPrefix) {
+				continue
+			}
+			empty := item.Get("type").Str == "item_reference"
+			if item.Get("type").Str == "message" && item.Get("role").Str == "assistant" {
+				content := item.Get("content")
+				empty = content.IsArray() && len(content.Array()) == 0
+			}
+			if !empty {
+				continue
+			}
+			body, err = sjson.DeleteBytes(body, fmt.Sprintf("input.%d", i))
+			if err != nil {
+				return false, types.NewError(err, types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+			}
+			changed = true
+		}
+	}
+	if changed {
+		replacement, replaceErr := common.CreateBodyStorage(body)
+		if replaceErr != nil {
+			return false, types.NewError(replaceErr, types.ErrorCodeReadRequestBodyFailed, types.ErrOptionWithSkipRetry())
+		}
+		_ = storage.Close()
+		storage = replacement
+		c.Set(common.KeyBodyStorage, replacement)
+		c.Set(common.KeyRequestBody, nil)
+		c.Request.Body = io.NopCloser(replacement)
+		c.Request.ContentLength = int64(len(body))
+	}
 	id := gjson.GetBytes(body, "previous_response_id").Str
 	if !strings.HasPrefix(id, ResponseAliasPrefix) {
-		return false, nil
+		return changed, nil
 	}
 	invalid := func(status int, messageKey string) (bool, *types.NewAPIError) {
 		return false, types.NewErrorWithStatusCode(errors.New(i18n.T(c, messageKey)), types.ErrorCodeInvalidRequest, status, types.ErrOptionWithSkipRetry())

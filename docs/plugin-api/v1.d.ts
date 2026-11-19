@@ -262,10 +262,10 @@ export type TransformEffect =
   | {type: "media.reencode"; media: number; format: "auto" | "jpeg" | "png"; quality?: number; maxSide?: number}
   /** Lossless WebP; it takes no quality. */
   | {type: "media.reencode"; media: number; format: "webp"; maxSide?: number}
-  /** Egress only. Send upstream immediately and schedule one native start frame; delayMs is an integer from 0 to 60000, default 0, and yields to the first upstream bytes. No-op for other transports/endpoints; invalid on task submissions. */
-  | {type: "stream.start"; timing: "before_upstream"; delayMs?: number}
+  /** Egress only. Send upstream immediately and schedule a native start; delayMs is 0..60000, default 0, and yields to upstream bytes. outputItem adds an empty Responses message and shifts real output indices; default false. Unsupported transports/endpoints are no-ops; invalid on tasks. */
+  | {type: "stream.start"; timing: "before_upstream"; delayMs?: number; outputItem?: boolean}
   /** Send after successful streaming HTTP response headers; no delay is allowed. */
-  | {type: "stream.start"; timing: "after_connect"};
+  | {type: "stream.start"; timing: "after_connect"; outputItem?: boolean};
 /** What matched, by rule and count, never the matched text. rule, category and path are at most 256 characters. */
 export interface TransformFinding {rule: string; category?: string; path?: string; count: number}
 /** At most 64 findings. code matches ^[a-z0-9_.-]{1,64}$; message and ruleId are at most 256 characters. notice is shown to the user in the log as it is: at most 8 locales of at most 200 characters. */
