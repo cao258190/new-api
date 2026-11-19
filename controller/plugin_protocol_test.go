@@ -1789,34 +1789,32 @@ func TestServeTaskPluginImageProtocolSubmissionErrorUsesOpenAIEnvelope(t *testin
 	assert.NotContains(t, errorBody["message"], "request_id")
 }
 
-func TestServeTaskPluginImageProtocolRejectsInvalidImageCount(t *testing.T) {
-	for _, invalidCount := range []float64{-1, 1e300, 1.5} {
-		t.Run(fmt.Sprintf("n=%v", invalidCount), func(t *testing.T) {
+func TestServeTaskPluginImageProtocolMarksOnlyAuthorizedPlaygroundRequestsFree(t *testing.T) {
+	for _, tc := range []struct {
+		name, group string
+		playground  bool
+		wantFree    bool
+	}{
+		{name: "authorized playground", group: service.ImageStudioFreeImageGroup, playground: true, wantFree: true},
+		{name: "ordinary API with free group", group: service.ImageStudioFreeImageGroup},
+		{name: "paid playground", group: "default", playground: true},
+		{name: "ordinary API", group: "default"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			pinned := imageProtocolTestEndpoint(t)
 			c, recorder := newImageProtocolTestContext("")
-			common.SetContextKey(c, constant.ContextKeyUsingGroup, service.ImageStudioFreeImageGroup)
-			common.SetContextKey(c, constant.ContextKeyIsPlayground, true)
-			requestValue, ok := c.Get(pluginruntime.ContextKeyProtocolRequest)
-			require.True(t, ok)
-			protocolRequest := requestValue.(pluginruntime.ProtocolRequestContext)
-			body := protocolRequest.Body.(map[string]any)
-			jsonBody := body["value"].(map[string]any)
-			jsonBody["n"] = invalidCount
-			var submitted bool
+			common.SetContextKey(c, constant.ContextKeyUsingGroup, tc.group)
+			common.SetContextKey(c, constant.ContextKeyIsPlayground, tc.playground)
 			deps := pluginProtocolTestDeps()
-			deps.submit = func(*gin.Context, *relaycommon.RelayInfo) (*taskSubmissionOutcome, *dto.TaskError) {
-				submitted = true
-				return nil, nil
+			deps.submit = func(_ *gin.Context, info *relaycommon.RelayInfo) (*taskSubmissionOutcome, *dto.TaskError) {
+				assert.Equal(t, tc.wantFree, info.IsImageStudioFree)
+				assert.Nil(t, info.ImageStudioQuotaReservation, "the bridge leaves reservation to the validated task attempt")
+				return imageProtocolTestOutcome(info, model.TaskStatusSuccess, "https://cdn.example/free.png"), nil
 			}
 
 			serveTaskPluginImageProtocol(c, pinned, deps)
 
-			assert.False(t, submitted)
-			assert.Equal(t, http.StatusBadRequest, recorder.Code)
-			var response map[string]any
-			require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
-			errorBody := response["error"].(map[string]any)
-			assert.Equal(t, "invalid_image_count", errorBody["code"])
+			assert.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
 		})
 	}
 }

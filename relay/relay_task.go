@@ -13,7 +13,9 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
@@ -22,6 +24,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
+	"github.com/QuantumNous/new-api/relay/requestplugin"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/types"
@@ -200,6 +203,16 @@ func ApplyOriginTaskAffinity(c *gin.Context, info *relaycommon.RelayInfo) *dto.T
 func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitResult, *dto.TaskError) {
 	info.InitChannelMeta(c)
 
+	// The attempt's late request plugins see the client body before it is
+	// validated and priced; a changed body is decoded again.
+	if changed, apiErr := requestplugin.TaskAttempt(c, info); apiErr != nil {
+		return nil, requestplugin.TaskError(apiErr)
+	} else if changed {
+		if taskErr := middleware.RefreshTaskPluginRequest(c); taskErr != nil {
+			return nil, taskErr
+		}
+	}
+
 	// 1. 确定 platform → 创建适配器 → 验证请求
 	platform := constant.TaskPlatform(c.GetString("platform"))
 	if platform == "" {
@@ -258,8 +271,16 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	if pinnedPlugin.Plugin != nil {
 		pluginKey = pinnedPlugin.Plugin.Meta.Key
 	}
-	exprStr, exists := billing_setting.ResolveTaskBillingExpr(pluginKey, modelName, info.UpstreamModelName)
+	exprStr, overridden, exists := billing_setting.ResolveTaskBillingExpr(pluginKey, modelName, info.UpstreamModelName)
 	useTiered := exists || billing_setting.GetBillingMode(modelName) == billing_setting.BillingModeTieredExpr
+	// A plugin that also relays the model charges its chat requests with the
+	// model-level price. Its tasks share only a per-call price or a usage
+	// expression; any other price would charge them a chat price.
+	relaysModel := pinnedPlugin.Plugin != nil && pinnedPlugin.Plugin.Meta.RelaysModel(modelName)
+	if exists && !billing_setting.TaskPriceExpr(exprStr, overridden, relaysModel) {
+		err = errors.New(i18n.T(c, i18n.MsgRelayTaskPriceNotConfigured, map[string]any{"Model": modelName, "Plugin": pluginKey}))
+		return nil, service.TaskErrorWrapper(err, "model_price_error", http.StatusBadRequest, common.UpstreamAddresses(c)...)
+	}
 	if useTiered {
 		provider, supported := adaptor.(channel.TaskUsageFactsProvider)
 		if billingexpr.UsesFixedPricing(exprStr) {
@@ -298,6 +319,9 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		info.TieredBillingSnapshot = &billingexpr.BillingSnapshot{BillingMode: billing_setting.BillingModeTieredExpr, ModelName: modelName, ExprString: exprStr, ExprHash: billingexpr.ExprHashString(exprStr), GroupRatio: groupRatioInfo.GroupRatio, EstimatedQuotaBeforeGroup: cost * common.QuotaPerUnit, EstimatedQuotaAfterGroup: quota, EstimatedTier: trace.MatchedTier, QuotaPerUnit: common.QuotaPerUnit, ExprVersion: billingexpr.ExprVersion(exprStr), TaskUsageBilling: true, UsageFacts: facts}
 	} else {
 		priceData, err = helper.ModelPriceHelperPerCall(c, info)
+		if err == nil && relaysModel && !priceData.UsePrice {
+			err = errors.New(i18n.T(c, i18n.MsgRelayTaskPriceNotConfigured, map[string]any{"Model": modelName, "Plugin": pluginKey}))
+		}
 		if err != nil {
 			return nil, service.TaskErrorWrapper(err, "model_price_error", http.StatusBadRequest, common.UpstreamAddresses(c)...)
 		}
@@ -331,7 +355,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		info.PriceData.Quota = quota
 		noteTaskQuotaClamp(info, clamp)
 	}
-	if info.IsImageStudioFree && info.ImageStudioQuotaReservation != nil {
+	if info.IsImageStudioFree {
 		imageCount := service.ImageStudioImageCountFromUsageFacts(map[string]any{
 			"image_count": info.PriceData.OtherRatios()["image_count"],
 		})
@@ -341,11 +365,19 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		if imageCount < 1 {
 			return nil, service.TaskErrorWrapperLocal(errors.New("free image task did not provide a valid image count"), "plugin_usage_invalid", http.StatusBadRequest)
 		}
-		if resizeErr := service.ResizeImageStudioFreeImageReservation(info.ImageStudioQuotaReservation, imageCount); resizeErr != nil {
+		// Both ingress stages may change the count. Reserve only their final,
+		// validated usage, before egress or the upstream request; retries resize it.
+		var reservationErr error
+		if info.ImageStudioQuotaReservation == nil {
+			info.ImageStudioQuotaReservation, reservationErr = service.ReserveImageStudioFreeImages(imageCount)
+		} else {
+			reservationErr = service.ResizeImageStudioFreeImageReservation(info.ImageStudioQuotaReservation, imageCount)
+		}
+		if reservationErr != nil {
 			statusCode := http.StatusServiceUnavailable
 			code := "image_studio_quota_unavailable"
 			message := "Image Studio free quota is temporarily unavailable"
-			if errors.Is(resizeErr, service.ErrImageStudioQuotaExceeded) {
+			if errors.Is(reservationErr, service.ErrImageStudioQuotaExceeded) {
 				statusCode = http.StatusTooManyRequests
 				code = "image_studio_quota_exceeded"
 				message = "Daily free image quota is insufficient"
@@ -371,6 +403,12 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	requestBody, err := adaptor.BuildRequestBody(c, info)
 	if err != nil {
 		return nil, service.TaskErrorWrapper(err, "build_request_failed", http.StatusInternalServerError, common.UpstreamAddresses(c)...)
+	}
+	// The egress request plugins check the body the attempt sends; the
+	// reservation of a stopped attempt is refunded.
+	requestBody, apiErr := requestplugin.TaskEgress(c, info, requestBody)
+	if apiErr != nil {
+		return nil, requestplugin.TaskError(apiErr)
 	}
 
 	// 9. 发送请求
