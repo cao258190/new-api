@@ -14,10 +14,10 @@ concurrency:
 # Build only the reviewed Image Studio source for the isolated test environment.
 # Production publishing remains a separate, protected registry workflow.
 env:
-  SOURCE_SHA: c6e7c20ee45dc4fd43b5982942aa5074ff20ad5b
+  SOURCE_SHA: 7ae1a8f788165bacd6084b9a1345f89ec95347a1
   UPSTREAM_SHA: c9c6da2786b6a0912215127e78e28fbc6650c85f
-  RELEASE_VERSION: custom-v2026.11.20.3-rc.1
-  IMAGE_REF: new-api-staging:custom-v2026.11.20.3-rc.1
+  RELEASE_VERSION: custom-v2026.11.20.3-rc.2
+  IMAGE_REF: new-api-staging:custom-v2026.11.20.3-rc.2
 
 jobs:
   verify:
