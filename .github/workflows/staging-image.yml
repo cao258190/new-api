@@ -11,55 +11,45 @@ concurrency:
   group: staging-image-us-4-8
   cancel-in-progress: false
 
-# Build only the reviewed source for the existing isolated test environment.
-# Reuse local frontend and accounting checks; verify affected Go paths on Linux.
+# Build only the reviewed Image Studio source for the isolated test environment.
 # Production publishing remains a separate, protected registry workflow.
 env:
-  SOURCE_SHA: c33e69bc822c94fc73dda2115c86ff015fa410e2
+  SOURCE_SHA: c6e7c20ee45dc4fd43b5982942aa5074ff20ad5b
   UPSTREAM_SHA: c9c6da2786b6a0912215127e78e28fbc6650c85f
-  RELEASE_VERSION: custom-v2026.11.19.8-rc.1
-  IMAGE_REF: new-api-staging:custom-v2026.11.19.8-rc.1
+  RELEASE_VERSION: custom-v2026.11.20.3-rc.1
+  IMAGE_REF: new-api-staging:custom-v2026.11.20.3-rc.1
 
 jobs:
   verify:
-    name: Verify stream start and response regression
-    if: github.repository == 'cao258190/new-api' && github.ref == 'refs/heads/codex/request-plugin-usage-rewrite'
+    name: Verify Image Studio frontend
+    if: github.repository == 'cao258190/new-api' && github.ref == 'refs/heads/codex/staging-image-studio-20261120'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
-    env:
-      GOWORK: 'off'
+    defaults:
+      run:
+        working-directory: web
     steps:
       - name: Checkout fixed source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ env.SOURCE_SHA }}
           persist-credentials: false
-      - name: Set up Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          go-version-file: go.mod
-          cache-dependency-path: |
-            go.sum
-            relaykit/go.sum
-            tokenkit/go.sum
-      - name: Verify root module, stream start and response accounting
+          bun-version: '1.4.4'
+      - name: Verify the workbench and shared dialog
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          mkdir -p web/dist
-          touch web/dist/index.html
-          go vet ./...
-          go build ./...
-          go test ./controller ./middleware ./model ./pkg/jsplugin ./pkg/requestpatch ./plugins ./relay/... ./service ./i18n
-          go test -race ./relay/requestplugin -run TestStreamStart -count=1
-      - name: Verify relaykit independently
-        working-directory: relaykit
-        run: |
-          set -euo pipefail
-          go build ./...
-          go test ./dto ./relayconvert/...
+          bun install --frozen-lockfile
+          bun run typecheck
+          bun run test src/features/image-studio src/components/ui/__tests__/dialog-layout.test.tsx
+          bun x oxlint -c .oxlintrc.json src/features/image-studio src/components/dialog.tsx
+          bun run i18n:sync
+          git diff --exit-code -- src/i18n/locales
   build:
-    if: github.repository == 'cao258190/new-api' && github.ref == 'refs/heads/codex/request-plugin-usage-rewrite'
+    if: github.repository == 'cao258190/new-api' && github.ref == 'refs/heads/codex/staging-image-studio-20261120'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -131,7 +121,7 @@ jobs:
           jq -n --arg version "$RELEASE_VERSION" --arg image "$IMAGE_REF" --arg id "$image_id" \
             --arg source "$(git rev-parse HEAD)" --arg upstream "$UPSTREAM_SHA" \
             --arg workflow_sha "$GITHUB_SHA" --arg run_url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-            '{version:$version,image_ref:$image,image_id:$id,source_sha:$source,upstream_sha:$upstream,workflow_sha:$workflow_sha,platform:"linux/amd64",run_url:$run_url,purpose:"isolated staging only",tests:{local:"requestplugin, requestpatch, plugins, channel, relay/common and service tests passed; Responses text, reasoning, tool-call output, input replay and failure cases passed",frontend:"typecheck and 14 config-form tests passed; existing schema form reused; changed plugin lint/format passed; production frontend built in this image",linux_regression:"separate Verify stream start and response regression job plus focused stream-start race test; require overall run success",database_matrix:"not rerun: no schema, query or driver changes",image_smoke:"passed"},security_scanning:{enabled:false,policy:"existing isolated staging policy"}}' \
+            '{version:$version,image_ref:$image,image_id:$id,source_sha:$source,upstream_sha:$upstream,workflow_sha:$workflow_sha,platform:"linux/amd64",run_url:$run_url,purpose:"isolated staging only",tests:{frontend:"Require overall run success for the Image Studio and shared dialog regression job",database_matrix:"not rerun: frontend only",image_smoke:"passed"},security_scanning:{enabled:false,policy:"existing isolated staging policy"}}' \
             > "$RUNNER_TEMP/release/release.json"
           docker save "$IMAGE_REF" | gzip -1 > "$RUNNER_TEMP/release/image.tar.gz"
           cd "$RUNNER_TEMP/release"
