@@ -47,7 +47,7 @@ export function ImageStudioSessionMenu(props: ImageStudioSessionMenuProps) {
   return (
     <>
       <Popover open={open} onOpenChange={setOpen}>
-        <h1 className='min-w-0'>
+        <h1 className='w-full min-w-0'>
           <PopoverTrigger
             disabled={props.disabled}
             ref={props.triggerRef}
