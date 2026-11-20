@@ -2963,6 +2963,7 @@
     "First API request": "Первый API-запрос",
     "First token": "Первый токен",
     "First/Last Frame to Video": "Первый/последний кадр в видео",
+    "Fit to window": "По размеру окна",
     "Fix Abilities": "Восстановить согласованность каналов",
     "Fix order": "Исправить порядок",
     "Fix the Request Header Override JSON first": "Сначала исправьте JSON переопределения заголовков",
@@ -4210,6 +4211,7 @@
     "Newly released": "Новые релизы",
     "Next": "Следующий шаг",
     "Next branch": "Следующая ветка",
+    "Next image": "Следующее изображение",
     "Next page": "Следующая страница",
     "Next reset": "Следующий сброс",
     "No": "Нет",
@@ -5151,6 +5153,7 @@
     "Preview excludes group ratios and request rule multipliers.": "Предпросмотр не учитывает коэффициенты групп и множители правил запроса.",
     "Preview fields": "Предпросмотр полей",
     "Preview image": "Предпросмотр изображения",
+    "Preview image {{number}}": "Просмотреть изображение {{number}}",
     "Preview is unavailable for custom expressions.": "Предпросмотр недоступен для пользовательских выражений.",
     "Preview metadata first": "Сначала просмотрите метаданные",
     "Preview price changes": "Предпросмотр изменений цен",
@@ -5160,6 +5163,7 @@
     "Preview upstream model changes": "Просмотр изменений моделей провайдера",
     "Previous": "Предыдущий шаг",
     "Previous branch": "Предыдущая ветка",
+    "Previous image": "Предыдущее изображение",
     "Previous page": "Предыдущая страница",
     "Previous permissions": "Прежние права",
     "Previous value": "Предыдущее значение",
@@ -5940,6 +5944,7 @@
     "Science": "Наука",
     "Scope": "Область",
     "Scopes": "Области доступа",
+    "Scroll to bottom": "Прокрутить вниз",
     "Search": "Поиск",
     "Search by name or URL...": "Поиск по имени или URL...",
     "Search by order number...": "Поиск по номеру заказа...",
@@ -7907,6 +7912,8 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Zoom in": "Увеличить",
+    "Zoom out": "Уменьшить"
   }
 }

@@ -6,7 +6,7 @@ it under the terms of the GNU Affero General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 */
-import { Image as ImageIcon, Loader2 } from 'lucide-react'
+import { Loader2, Sparkles } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { ModelGroupSelector } from '@/components/model-group-selector'
@@ -48,22 +48,22 @@ export function GenerationPanel(props: GenerationPanelProps) {
   const isSessionReady = props.isSessionReady ?? true
 
   return (
-    <Card className='mt-auto'>
-      <CardContent className='p-3'>
+    <Card className='border-border focus-within:ring-ring gap-0 border py-1 shadow-none'>
+      <CardContent className='p-2.5 md:p-3'>
         <fieldset
-          className='min-w-0 space-y-3'
+          className='min-w-0 space-y-2'
           disabled={!isSessionReady || props.isGenerating}
         >
           <Textarea
             aria-label={t('Prompt')}
-            className='min-h-28 resize-y border-0 bg-transparent shadow-none focus-visible:ring-0'
+            className='bg-muted/30 dark:bg-muted/30 max-h-[24svh] min-h-14 resize-y border-0 px-2 py-2 shadow-none focus-visible:ring-0'
             onChange={(event) =>
               props.onParamChange('prompt', event.target.value)
             }
             placeholder={t('Describe the image you want to create...')}
             value={props.params.prompt}
           />
-          <div className='flex flex-wrap items-center justify-between gap-3 border-t pt-3'>
+          <div className='flex flex-wrap items-center justify-between gap-2 border-t pt-2'>
             <div className='flex min-w-0 flex-wrap items-center gap-2'>
               <ImageUpload
                 accept='image/png,image/jpeg,image/webp'
@@ -91,7 +91,7 @@ export function GenerationPanel(props: GenerationPanelProps) {
                 onParamChange={props.onParamChange}
               />
             </div>
-            <div className='flex min-w-0 flex-wrap items-center justify-end gap-2'>
+            <div className='ms-auto flex max-w-full min-w-0 flex-wrap items-center justify-end gap-2'>
               <ModelGroupSelector
                 disabled={props.isOptionsLoading || !isSessionReady}
                 groups={props.groups}
@@ -113,12 +113,12 @@ export function GenerationPanel(props: GenerationPanelProps) {
               >
                 {props.isGenerating ? (
                   <>
-                    <Loader2 className='animate-spin' />
+                    <Loader2 aria-hidden='true' className='animate-spin' />
                     {t('Generating...')}
                   </>
                 ) : (
                   <>
-                    <ImageIcon />
+                    <Sparkles aria-hidden='true' />
                     {t('Generate')}
                   </>
                 )}

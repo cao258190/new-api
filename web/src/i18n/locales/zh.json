@@ -2963,6 +2963,7 @@
     "First API request": "首个 API 请求",
     "First token": "首字",
     "First/Last Frame to Video": "首尾生视频",
+    "Fit to window": "适应窗口",
     "Fix Abilities": "修复渠道一致性",
     "Fix order": "修复顺序",
     "Fix the Request Header Override JSON first": "请先修正请求头覆盖的 JSON",
@@ -4210,6 +4211,7 @@
     "Newly released": "最新发布",
     "Next": "下一步",
     "Next branch": "下一个分支",
+    "Next image": "下一张",
     "Next page": "下一页",
     "Next reset": "下一次重置",
     "No": "否",
@@ -5151,6 +5153,7 @@
     "Preview excludes group ratios and request rule multipliers.": "预览不包含分组倍率和请求规则倍率。",
     "Preview fields": "预览字段",
     "Preview image": "预览图片",
+    "Preview image {{number}}": "预览第 {{number}} 张图片",
     "Preview is unavailable for custom expressions.": "自定义表达式无法预览。",
     "Preview metadata first": "请先预览资料",
     "Preview price changes": "预览价格变更",
@@ -5160,6 +5163,7 @@
     "Preview upstream model changes": "预览上游模型变更",
     "Previous": "上一步",
     "Previous branch": "上一分支",
+    "Previous image": "上一张",
     "Previous page": "上一页",
     "Previous permissions": "原权限",
     "Previous value": "原值",
@@ -5940,6 +5944,7 @@
     "Science": "科研",
     "Scope": "作用域",
     "Scopes": "作用域",
+    "Scroll to bottom": "滚动到底部",
     "Search": "搜索",
     "Search by name or URL...": "按名称或 URL 搜索...",
     "Search by order number...": "按订单号搜索...",
@@ -7907,6 +7912,8 @@
     "Zhipu": "智谱",
     "Zhipu GLM": "智谱GLM",
     "Zhipu V4": "智谱 V4",
-    "Zoom": "缩放"
+    "Zoom": "缩放",
+    "Zoom in": "放大",
+    "Zoom out": "缩小"
   }
 }

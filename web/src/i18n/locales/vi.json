@@ -2963,6 +2963,7 @@
     "First API request": "Yêu cầu API đầu tiên",
     "First token": "Token đầu",
     "First/Last Frame to Video": "Khung đầu/cuối sang video",
+    "Fit to window": "Vừa cửa sổ",
     "Fix Abilities": "Sửa tính nhất quán kênh",
     "Fix order": "Sửa thứ tự",
     "Fix the Request Header Override JSON first": "Hãy sửa JSON ghi đè header yêu cầu trước",
@@ -4210,6 +4211,7 @@
     "Newly released": "Vừa phát hành",
     "Next": "Tiếp",
     "Next branch": "Nhánh tiếp theo",
+    "Next image": "Ảnh tiếp theo",
     "Next page": "Trang tiếp theo",
     "Next reset": "Lần đặt lại tiếp theo",
     "No": "Không",
@@ -5151,6 +5153,7 @@
     "Preview excludes group ratios and request rule multipliers.": "Bản xem trước không bao gồm hệ số nhóm và hệ số nhân của quy tắc yêu cầu.",
     "Preview fields": "Xem trước các trường",
     "Preview image": "Xem trước ảnh",
+    "Preview image {{number}}": "Xem trước ảnh {{number}}",
     "Preview is unavailable for custom expressions.": "Không thể xem trước biểu thức tùy chỉnh.",
     "Preview metadata first": "Hãy xem trước siêu dữ liệu",
     "Preview price changes": "Xem trước thay đổi giá",
@@ -5160,6 +5163,7 @@
     "Preview upstream model changes": "Xem trước thay đổi mô hình thượng nguồn",
     "Previous": "Trước",
     "Previous branch": "Nhánh trước",
+    "Previous image": "Ảnh trước",
     "Previous page": "Trang trước",
     "Previous permissions": "Quyền trước đó",
     "Previous value": "Giá trị trước đó",
@@ -5940,6 +5944,7 @@
     "Science": "Khoa học",
     "Scope": "Phạm vi",
     "Scopes": "Phạm vi",
+    "Scroll to bottom": "Cuộn xuống cuối",
     "Search": "Tìm kiếm",
     "Search by name or URL...": "Tìm kiếm theo tên hoặc URL...",
     "Search by order number...": "Tìm kiếm theo số đơn hàng...",
@@ -7907,6 +7912,8 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Zoom in": "Phóng to",
+    "Zoom out": "Thu nhỏ"
   }
 }

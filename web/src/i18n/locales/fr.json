@@ -2963,6 +2963,7 @@
     "First API request": "Première requête API",
     "First token": "1er token",
     "First/Last Frame to Video": "Première/Dernière image vers vidéo",
+    "Fit to window": "Ajuster à la fenêtre",
     "Fix Abilities": "Réparer la cohérence des canaux",
     "Fix order": "Corriger l’ordre",
     "Fix the Request Header Override JSON first": "Corrigez d'abord le JSON de surcharge des en-têtes",
@@ -4210,6 +4211,7 @@
     "Newly released": "Récemment publiés",
     "Next": "Suivant",
     "Next branch": "Branche suivante",
+    "Next image": "Image suivante",
     "Next page": "Page suivante",
     "Next reset": "Prochaine réinitialisation",
     "No": "Non",
@@ -5151,6 +5153,7 @@
     "Preview excludes group ratios and request rule multipliers.": "L’aperçu exclut les coefficients de groupe et les multiplicateurs des règles de requête.",
     "Preview fields": "Aperçu des champs",
     "Preview image": "Prévisualiser l’image",
+    "Preview image {{number}}": "Aperçu de l’image {{number}}",
     "Preview is unavailable for custom expressions.": "L’aperçu n’est pas disponible pour les expressions personnalisées.",
     "Preview metadata first": "Prévisualisez d’abord les métadonnées",
     "Preview price changes": "Aperçu des changements de tarifs",
@@ -5160,6 +5163,7 @@
     "Preview upstream model changes": "Aperçu des changements de modèles en amont",
     "Previous": "Précédent",
     "Previous branch": "Branche précédente",
+    "Previous image": "Image précédente",
     "Previous page": "Page précédente",
     "Previous permissions": "Autorisations précédentes",
     "Previous value": "Valeur précédente",
@@ -5940,6 +5944,7 @@
     "Science": "Science",
     "Scope": "Portée",
     "Scopes": "Portées",
+    "Scroll to bottom": "Défiler vers le bas",
     "Search": "Rechercher",
     "Search by name or URL...": "Rechercher par nom ou URL...",
     "Search by order number...": "Rechercher par numéro de commande...",
@@ -7907,6 +7912,8 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Zoom in": "Agrandir",
+    "Zoom out": "Réduire"
   }
 }

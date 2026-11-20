@@ -2963,6 +2963,7 @@
     "First API request": "First API request",
     "First token": "First token",
     "First/Last Frame to Video": "First/Last Frame to Video",
+    "Fit to window": "Fit to window",
     "Fix Abilities": "Repair Channel Consistency",
     "Fix order": "Fix order",
     "Fix the Request Header Override JSON first": "Fix the Request Header Override JSON first",
@@ -4210,6 +4211,7 @@
     "Newly released": "Newly released",
     "Next": "Next",
     "Next branch": "Next branch",
+    "Next image": "Next image",
     "Next page": "Next page",
     "Next reset": "Next reset",
     "No": "No",
@@ -5151,6 +5153,7 @@
     "Preview excludes group ratios and request rule multipliers.": "Preview excludes group ratios and request rule multipliers.",
     "Preview fields": "Preview fields",
     "Preview image": "Preview image",
+    "Preview image {{number}}": "Preview image {{number}}",
     "Preview is unavailable for custom expressions.": "Preview is unavailable for custom expressions.",
     "Preview metadata first": "Preview metadata first",
     "Preview price changes": "Preview price changes",
@@ -5160,6 +5163,7 @@
     "Preview upstream model changes": "Preview upstream model changes",
     "Previous": "Previous",
     "Previous branch": "Previous branch",
+    "Previous image": "Previous image",
     "Previous page": "Previous page",
     "Previous permissions": "Previous permissions",
     "Previous value": "Previous value",
@@ -5940,6 +5944,7 @@
     "Science": "Science",
     "Scope": "Scope",
     "Scopes": "Scopes",
+    "Scroll to bottom": "Scroll to bottom",
     "Search": "Search",
     "Search by name or URL...": "Search by name or URL...",
     "Search by order number...": "Search by order number...",
@@ -7907,6 +7912,8 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Zoom in": "Zoom in",
+    "Zoom out": "Zoom out"
   }
 }

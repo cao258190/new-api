@@ -2963,6 +2963,7 @@
     "First API request": "最初の API リクエスト",
     "First token": "先頭トークン",
     "First/Last Frame to Video": "先頭/末尾フレームから動画",
+    "Fit to window": "ウィンドウに合わせる",
     "Fix Abilities": "チャネル整合性を修復",
     "Fix order": "順序を修正",
     "Fix the Request Header Override JSON first": "先にリクエストヘッダー上書きの JSON を修正してください",
@@ -4210,6 +4211,7 @@
     "Newly released": "最新リリース",
     "Next": "次へ",
     "Next branch": "次のブランチ",
+    "Next image": "次の画像",
     "Next page": "次のページ",
     "Next reset": "次のリセット",
     "No": "いいえ",
@@ -5151,6 +5153,7 @@
     "Preview excludes group ratios and request rule multipliers.": "プレビューにはグループ倍率とリクエストルールの倍率は含まれません。",
     "Preview fields": "項目をプレビュー",
     "Preview image": "画像をプレビュー",
+    "Preview image {{number}}": "画像 {{number}} をプレビュー",
     "Preview is unavailable for custom expressions.": "カスタム式はプレビューできません。",
     "Preview metadata first": "先にメタデータをプレビューしてください",
     "Preview price changes": "料金変更をプレビュー",
@@ -5160,6 +5163,7 @@
     "Preview upstream model changes": "上流モデルの変更をプレビュー",
     "Previous": "前へ",
     "Previous branch": "前のブランチ",
+    "Previous image": "前の画像",
     "Previous page": "前のページ",
     "Previous permissions": "変更前の権限",
     "Previous value": "以前の値",
@@ -5940,6 +5944,7 @@
     "Science": "科学",
     "Scope": "スコープ",
     "Scopes": "スコープ",
+    "Scroll to bottom": "一番下までスクロール",
     "Search": "検索",
     "Search by name or URL...": "名前またはURLで検索...",
     "Search by order number...": "注文番号で検索...",
@@ -7907,6 +7912,8 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V 4",
-    "Zoom": "ズーム"
+    "Zoom": "ズーム",
+    "Zoom in": "拡大",
+    "Zoom out": "縮小"
   }
 }
