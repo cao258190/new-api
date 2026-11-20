@@ -15,6 +15,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { toIntlLocale } from '@/i18n/languages'
+import { formatNumber } from '@/lib/format'
 
 import {
   alignImageDimension,
@@ -37,6 +39,9 @@ const qualityOptions = [
   { value: 'low', label: 'Low' },
 ] as const
 
+const optionButtonClassName =
+  'w-full min-w-0 rounded-full px-1 aria-pressed:border-primary aria-pressed:bg-primary/15 aria-pressed:text-foreground aria-pressed:font-semibold aria-pressed:inset-ring-1 aria-pressed:inset-ring-primary forced-colors:aria-pressed:underline motion-reduce:transition-none'
+
 type ImageSettingsDialogProps = {
   params: ImageStudioParams
   disabled: boolean
@@ -48,7 +53,8 @@ type ImageSettingsDialogProps = {
 
 /** Render the image parameter editor in a compact, persistent modal. */
 export function ImageSettingsDialog(props: ImageSettingsDialogProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const [open, setOpen] = useState(false)
   const [customCount, setCustomCount] = useState(
     props.params.n > 10 ? String(props.params.n) : ''
@@ -116,18 +122,21 @@ export function ImageSettingsDialog(props: ImageSettingsDialogProps) {
             className='grid grid-cols-4 gap-2'
             role='group'
           >
-            {qualityOptions.map((option) => (
-              <Button
-                aria-pressed={props.params.quality === option.value}
-                className='aria-pressed:border-foreground w-full rounded-full'
-                key={option.value}
-                onClick={() => props.onParamChange('quality', option.value)}
-                type='button'
-                variant='outline'
-              >
-                {t(option.label)}
-              </Button>
-            ))}
+            {qualityOptions.map((option) => {
+              const selected = props.params.quality === option.value
+              return (
+                <Button
+                  aria-pressed={selected}
+                  className={optionButtonClassName}
+                  key={option.value}
+                  onClick={() => props.onParamChange('quality', option.value)}
+                  type='button'
+                  variant={selected ? 'secondary' : 'outline'}
+                >
+                  {t(option.label)}
+                </Button>
+              )
+            })}
           </div>
         </section>
 
@@ -268,18 +277,21 @@ export function ImageSettingsDialog(props: ImageSettingsDialogProps) {
             role='group'
           >
             {Array.from({ length: 10 }, (_, index) => index + 1).map(
-              (value) => (
-                <Button
-                  aria-pressed={props.params.n === value}
-                  className='aria-pressed:border-foreground w-full rounded-full'
-                  key={value}
-                  onClick={() => props.onParamChange('n', value)}
-                  type='button'
-                  variant='outline'
-                >
-                  {value} {t(value === 1 ? 'Image' : 'Images')}
-                </Button>
-              )
+              (value) => {
+                const selected = props.params.n === value
+                return (
+                  <Button
+                    aria-pressed={selected}
+                    className={optionButtonClassName}
+                    key={value}
+                    onClick={() => props.onParamChange('n', value)}
+                    type='button'
+                    variant={selected ? 'secondary' : 'outline'}
+                  >
+                    {formatNumber(value, locale)}
+                  </Button>
+                )
+              }
             )}
             <Input
               aria-label={t('Custom image count')}
