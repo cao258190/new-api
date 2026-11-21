@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 import subprocess
 import time
-from urllib.error import URLError
 from urllib.parse import urlsplit
 from urllib.request import build_opener, ProxyHandler
 
@@ -62,7 +61,7 @@ try:
                 assert response.status == 200 and status['success']
                 assert status['data']['version'] == version
             break
-        except URLError:
+        except OSError:
             if time.monotonic() >= deadline:
                 raise
             time.sleep(2)
