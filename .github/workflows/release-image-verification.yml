@@ -1,0 +1,60 @@
+name: Verify released image
+on:
+  push:
+    branches: [codex/verify-release-20261121]
+    paths: [.github/workflows/release-image-verification.yml, .github/scripts/release-verification/**]
+permissions:
+  actions: read
+  contents: read
+concurrency:
+  group: verify-release-20261121
+  cancel-in-progress: true
+env:
+  RELEASE_RUN: '44875751999'
+  RELEASE_VERSION: custom-v2026.11.21.1
+  RELEASE_SHA: e3fa32e202230c7a745e6cd51edfd7883bcbd8fd
+jobs:
+  smoke:
+    name: Verify and start image (${{ matrix.arch }})
+    if: github.repository == 'cao258190/new-api'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: .github/scripts/release-verification
+    steps:
+      - name: Check out verifier
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - name: Download signed image verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha=$(gh run view "$RELEASE_RUN" --repo "$GITHUB_REPOSITORY" --json headSha --jq .headSha)
+          test "$sha" = "$RELEASE_SHA"
+          gh run watch "$RELEASE_RUN" --repo "$GITHUB_REPOSITORY" --compact --exit-status
+          gh run download "$RELEASE_RUN" --repo "$GITHUB_REPOSITORY" \
+            --name "new-api-release-$RELEASE_VERSION" --dir .
+      - name: Check registry digests and attestations
+        run: python3 verify-registry.py "$RELEASE_SHA"
+      - name: Start immutable image
+        run: python3 smoke-image.py
+      - name: Upload verification evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-image-verification-${{ matrix.arch }}
+          path: |
+            .github/scripts/release-verification/registry-verification.json
+            .github/scripts/release-verification/image-smoke.json
+          if-no-files-found: error
+          retention-days: 90
