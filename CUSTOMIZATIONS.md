@@ -4,6 +4,8 @@
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | CUST-001 | active | usage-logs | 调整请求日志首字时间的颜色阈值 | `web/src/features/usage-logs/lib/format.ts` | 低 | `web/src/features/usage-logs/lib/__tests__/timing-colors.test.ts` | 上游提供可配置阈值后可移除 |
 | CUST-002 | active | request-processing | 插件改写响应 Token 用量并统一返回、扣费和日志 | `relay/requestplugin/usage.go`、`pkg/jsplugin/usage.go` | 高 | 用量策略、协议转换及实际预扣结算回归 | 上游提供等价用量钩子后可移除 |
+| CUST-003 | active | announcements | 为重要公告增加弹窗确认 | `web/src/features/announcements/`、`web/src/hooks/use-notifications.ts` | 中 | 公告确认、普通公告兼容、维护信息展示 | 上游支持后可合并到官方公告功能 |
+| CUST-004 | active | image-studio | 调整生图工作台布局、查看器和设置反馈 | `web/src/features/image-studio/`、`web/src/styles/image-studio.css` | 中 | 图片查看、会话菜单、设置选中态 | 上游提供等价工作台体验后可移除 |
 
 ## CUST-001：调整请求日志首字时间颜色阈值
 
@@ -37,3 +39,13 @@
 - 最近复核的上游提交：`c9c6da2786b6a0912215127e78e28fbc6650c85f`（`v1.0.0-rc.51`）。
 - 冲突处理原则：同步时优先核对协议输出和结算的调用顺序、canonical 快照权威性及显式零值，禁止只改客户端数量而保留旧扣费快照。
 - 删除条件：上游提供等价的可配置用量钩子并通过协议、计费和流式回归后，迁移现有实例并移除重复接线。
+
+## CUST-003：重要公告弹窗
+
+- 管理员可为指定公告启用强提醒，并填写维护时间和影响范围。用户确认后不再重复弹出同一条公告，普通公告仍使用原来的提醒入口。
+- 提醒字段随现有公告设置保存，无数据库迁移或新增环境变量。同步上游时保留旧公告兼容和确认记录。
+
+## CUST-004：生图工作台改版
+
+- 侧栏显示免费生图标识；会话历史和新建入口收进顶部菜单。图片查看器支持缩略图切换、缩放和平移，质量和数量的选中项持续高亮。
+- 将界面交互与现有生成、免费额度和计费流程分开；同步上游时同时复核桌面、移动端和深色模式。
