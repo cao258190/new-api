@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { zodResolver } from '@hookform/resolvers/zod'
 import { Plus, Trash2, Save } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import * as z from 'zod'
@@ -60,6 +60,8 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { getAnnouncementReminder } from '@/features/announcements/lib/get-announcement-reminder'
+import type { AnnouncementReminderConfig } from '@/features/announcements/types'
 import { toIntlLocale } from '@/i18n/languages'
 import dayjs from '@/lib/dayjs'
 import { formatTimestampRelative } from '@/lib/format'
@@ -75,6 +77,7 @@ type Announcement = {
   publishDate: string
   type: 'default' | 'ongoing' | 'success' | 'warning' | 'error'
   extra?: string
+  reminder?: AnnouncementReminderConfig
 }
 
 type AnnouncementsSectionProps = {
@@ -82,22 +85,48 @@ type AnnouncementsSectionProps = {
   data: string
 }
 
-const announcementSchema = z.object({
-  content: z
-    .string()
-    .min(1, 'Content is required')
-    .max(500, 'Content must be less than 500 characters'),
-  publishDate: z.string().min(1, 'Publish date is required'),
-  type: z.enum(['default', 'ongoing', 'success', 'warning', 'error']),
-  extra: z
-    .string()
-    .max(100, 'Extra must be less than 100 characters')
-    .optional(),
-})
+const announcementSchema = z
+  .object({
+    content: z
+      .string()
+      .min(1, 'Content is required')
+      .max(500, 'Content must be less than 500 characters'),
+    publishDate: z.string().min(1, 'Publish date is required'),
+    type: z.enum(['default', 'ongoing', 'success', 'warning', 'error']),
+    extra: z
+      .string()
+      .max(100, 'Extra must be less than 100 characters')
+      .optional(),
+    strongReminder: z.boolean(),
+    plannedMaintenance: z.boolean(),
+    reminderTitle: z.string(),
+    maintenanceWindow: z.string(),
+    impactScope: z.string(),
+  })
+  .superRefine((values, context) => {
+    if (!values.strongReminder) return
+    const required = ['reminderTitle'] as const
+    const maintenanceFields = ['maintenanceWindow', 'impactScope'] as const
+    const fields = values.plannedMaintenance
+      ? [...required, ...maintenanceFields]
+      : required
+    for (const field of fields) {
+      if (!values[field].trim()) {
+        context.addIssue({ code: 'custom', message: 'Required', path: [field] })
+      }
+    }
+  })
 
 type AnnouncementFormValues = z.infer<typeof announcementSchema>
 
 const ANNOUNCEMENT_FORM_ID = 'announcement-form'
+const reminderDefaults = {
+  strongReminder: false,
+  plannedMaintenance: false,
+  reminderTitle: '',
+  maintenanceWindow: '',
+  impactScope: '',
+}
 
 const typeOptions = [
   {
@@ -156,7 +185,13 @@ export function AnnouncementsSection({
       publishDate: new Date().toISOString(),
       type: 'default',
       extra: '',
+      ...reminderDefaults,
     },
+  })
+
+  const [strongReminder, plannedMaintenance] = useWatch({
+    control: form.control,
+    name: ['strongReminder', 'plannedMaintenance'],
   })
 
   useEffect(() => {
@@ -167,6 +202,7 @@ export function AnnouncementsSection({
           parsed.map((item, idx) => ({
             ...item,
             id: item.id || idx + 1,
+            reminder: getAnnouncementReminder(item.reminder),
           }))
         )
       }
@@ -199,6 +235,7 @@ export function AnnouncementsSection({
       publishDate: new Date().toISOString(),
       type: 'default',
       extra: '',
+      ...reminderDefaults,
     })
     setShowDialog(true)
   }
@@ -210,6 +247,11 @@ export function AnnouncementsSection({
       publishDate: announcement.publishDate,
       type: announcement.type,
       extra: announcement.extra || '',
+      strongReminder: Boolean(announcement.reminder),
+      plannedMaintenance: Boolean(announcement.reminder?.maintenance),
+      reminderTitle: announcement.reminder?.title ?? '',
+      maintenanceWindow: announcement.reminder?.maintenance?.window ?? '',
+      impactScope: announcement.reminder?.maintenance?.impact ?? '',
     })
     setShowDialog(true)
   }
@@ -253,16 +295,44 @@ export function AnnouncementsSection({
   }
 
   const handleSubmitForm = (values: AnnouncementFormValues) => {
+    const id =
+      editingAnnouncement?.id ??
+      Math.max(...announcements.map((item) => item.id), 0) + 1
+    const announcement: Announcement = {
+      ...editingAnnouncement,
+      id,
+      content: values.content,
+      publishDate: values.publishDate,
+      type: values.type,
+      extra: values.extra,
+      reminder: undefined,
+    }
+    if (values.strongReminder) {
+      const reminderId =
+        editingAnnouncement?.reminder?.id ??
+        crypto.randomUUID?.() ??
+        Array.from(crypto.getRandomValues(new Uint32Array(4)), (part) =>
+          part.toString(36)
+        ).join('-')
+      announcement.reminder = {
+        id: reminderId,
+        title: values.reminderTitle.trim(),
+        maintenance: values.plannedMaintenance
+          ? {
+              window: values.maintenanceWindow.trim(),
+              impact: values.impactScope.trim(),
+            }
+          : undefined,
+      }
+    }
+
     if (editingAnnouncement) {
       setAnnouncements((prev) =>
-        prev.map((item) =>
-          item.id === editingAnnouncement.id ? { ...item, ...values } : item
-        )
+        prev.map((item) => (item.id === announcement.id ? announcement : item))
       )
       toast.success(t('Announcement updated. Click "Save Settings" to apply.'))
     } else {
-      const newId = Math.max(...announcements.map((item) => item.id), 0) + 1
-      setAnnouncements((prev) => [...prev, { id: newId, ...values }])
+      setAnnouncements((prev) => [...prev, announcement])
       toast.success(t('Announcement added. Click "Save Settings" to apply.'))
     }
     setHasChanges(true)
@@ -395,17 +465,26 @@ export function AnnouncementsSection({
               id: 'type',
               header: t('Type'),
               cell: (announcement) => (
-                <StatusBadge
-                  label={
-                    typeOptions.find((opt) => opt.value === announcement.type)
-                      ?.label
-                  }
-                  variant={
-                    typeOptions.find((opt) => opt.value === announcement.type)
-                      ?.badgeVariant ?? 'neutral'
-                  }
-                  copyable={false}
-                />
+                <div className='flex flex-wrap gap-1.5'>
+                  <StatusBadge
+                    label={
+                      typeOptions.find((opt) => opt.value === announcement.type)
+                        ?.label
+                    }
+                    variant={
+                      typeOptions.find((opt) => opt.value === announcement.type)
+                        ?.badgeVariant ?? 'neutral'
+                    }
+                    copyable={false}
+                  />
+                  {announcement.reminder ? (
+                    <StatusBadge
+                      label={t('Strong reminder')}
+                      variant='warning'
+                      copyable={false}
+                    />
+                  ) : null}
+                </div>
               ),
             },
             {
@@ -464,6 +543,72 @@ export function AnnouncementsSection({
             onSubmit={form.handleSubmit(handleSubmitForm)}
             className='space-y-4'
           >
+            <SettingsSwitchField
+              controlId='announcement-strong-reminder'
+              label={t('Strong reminder')}
+              description={t(
+                'Show a confirmation dialog when users enter the console'
+              )}
+              checked={strongReminder}
+              onCheckedChange={(checked) =>
+                form.setValue('strongReminder', checked)
+              }
+            />
+            {strongReminder ? (
+              <>
+                <FormField
+                  control={form.control}
+                  name='reminderTitle'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Announcement title')}</FormLabel>
+                      <FormControl>
+                        <Input maxLength={120} {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <SettingsSwitchField
+                  controlId='announcement-planned-maintenance'
+                  label={t('Planned maintenance')}
+                  checked={plannedMaintenance}
+                  onCheckedChange={(checked) =>
+                    form.setValue('plannedMaintenance', checked)
+                  }
+                />
+                {plannedMaintenance ? (
+                  <div className='grid gap-4 sm:grid-cols-2'>
+                    <FormField
+                      control={form.control}
+                      name='maintenanceWindow'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('Maintenance window')}</FormLabel>
+                          <FormControl>
+                            <Input maxLength={120} {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name='impactScope'
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>{t('Impact scope')}</FormLabel>
+                          <FormControl>
+                            <Input maxLength={180} {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+                ) : null}
+              </>
+            ) : null}
             <FormField
               control={form.control}
               name='content'

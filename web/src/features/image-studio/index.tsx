@@ -7,7 +7,7 @@ the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 */
 import { useQuery } from '@tanstack/react-query'
-import { Sparkles } from 'lucide-react'
+import { Images } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -24,12 +24,13 @@ import {
   getServerErrorMessage,
   translateServerText,
 } from '@/lib/server-error-message'
+import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { getImageGroups, getImageModels, requestImages } from './api'
 import { GenerationPanel } from './components/generation-panel'
 import { ImageHistory } from './components/image-history'
-import { ImageStudioSessionSidebar } from './components/session-sidebar'
+import { ImageStudioSessionMenu } from './components/session-menu'
 import { getImageSessionTitle } from './lib/session-title'
 import {
   deleteImageAsset,
@@ -46,6 +47,7 @@ import type {
   ImageStudioMode,
   ImageStudioModelOption,
   ImageStudioParams,
+  ImageStudioPendingMessage,
   ImageStudioSession,
 } from './types'
 
@@ -67,6 +69,8 @@ const DEFAULT_PARAMS: ImageStudioParams = {
 
 const EMPTY_MODELS: ImageStudioModelOption[] = []
 const EMPTY_GROUPS: ImageStudioGroupOption[] = []
+const STUDIO_LANE =
+  'mx-auto w-[calc(100%-1.5rem)] max-w-[58rem] md:w-[calc(100%-3.5rem)]'
 
 function createSession(): ImageStudioSession {
   const now = Date.now()
@@ -97,15 +101,15 @@ export function ImageStudio() {
   const [maskPreview, setMaskPreview] = useState('')
   const [isGenerating, setIsGenerating] = useState(false)
   const [isSavingAttachment, setIsSavingAttachment] = useState(false)
-  const [pendingMessage, setPendingMessage] = useState<
-    { id: string; prompt: string } | undefined
-  >()
+  const [pendingMessage, setPendingMessage] =
+    useState<ImageStudioPendingMessage>()
   const [deleteTarget, setDeleteTarget] = useState<string>()
   const [assetUrls, setAssetUrls] = useState<Record<string, string>>({})
   const draftTimer = useRef<number | null>(null)
   const inputPreviewRef = useRef(inputPreview)
   const maskPreviewRef = useRef(maskPreview)
   const assetUrlsRef = useRef(assetUrls)
+  const sessionMenuTrigger = useRef<HTMLButtonElement>(null)
   inputPreviewRef.current = inputPreview
   maskPreviewRef.current = maskPreview
   assetUrlsRef.current = assetUrls
@@ -443,9 +447,9 @@ export function ImageStudio() {
     }))
   }
 
-  const handleRename = (session: ImageStudioSession) => {
-    const title = window.prompt(t('Rename session'), session.title)?.trim()
-    if (!title) return
+  const handleRename = (id: string, title: string) => {
+    const session = sessions.find((item) => item.id === id)
+    if (!session) return
     const updated = { ...session, title, updatedAt: Date.now() }
     setSessions((previous) =>
       previous.map((item) => (item.id === session.id ? updated : item))
@@ -695,12 +699,11 @@ export function ImageStudio() {
       return
     }
     setIsGenerating(true)
-    const pending: {
-      id: string
-      prompt: string
-      inputPreview?: string
-      maskPreview?: string
-    } = { id: crypto.randomUUID(), prompt }
+    const pending: ImageStudioPendingMessage = {
+      id: crypto.randomUUID(),
+      prompt,
+      createdAt: Date.now(),
+    }
     if (requestInput) {
       pending.inputPreview = retryMessage?.inputAssetId
         ? assetUrls[retryMessage.inputAssetId]
@@ -727,11 +730,11 @@ export function ImageStudio() {
       )
     )
     const baseMessage: ImageStudioMessage = {
-      id: crypto.randomUUID(),
+      id: pending.id,
       prompt,
       mode: requestMode,
       params: requestParams,
-      createdAt: Date.now(),
+      createdAt: pending.createdAt,
       status: 'complete',
       inputAssetId: retryMessage ? retryMessage.inputAssetId : inputAssetId,
       maskAssetId: retryMessage ? retryMessage.maskAssetId : maskAssetId,
@@ -873,79 +876,83 @@ export function ImageStudio() {
   }
 
   return (
-    <div className='flex min-h-0 flex-1 overflow-hidden'>
-      <ImageStudioSessionSidebar
-        disabled={isGenerating || isSavingAttachment || !selectedSession}
-        onCreate={handleNewSession}
-        onDelete={setDeleteTarget}
-        onRename={handleRename}
-        onSelect={(session) => {
-          if (session.id === selectedId) return
-          clearSessionImages()
-          setSelectedId(session.id)
-        }}
-        selectedId={selectedId}
-        sessions={visibleSessions}
-      />
-      <section className='flex min-w-0 flex-1 flex-col overflow-hidden'>
-        <div className='mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col gap-5 p-4 md:p-6'>
-          {selectedSession?.messages.length || pendingMessage ? (
-            <Conversation>
-              <ConversationContent className='mx-auto w-full max-w-6xl space-y-6 p-2 md:p-4'>
-                <ImageHistory
-                  assetUrls={assetUrls}
-                  isGenerating={isGenerating}
-                  messages={selectedSession?.messages ?? []}
-                  pendingMessage={pendingMessage}
-                  onDownload={(url, name) => void download(url, name)}
-                  onRetry={retry}
-                />
-              </ConversationContent>
-              <ConversationScrollButton />
-            </Conversation>
-          ) : (
-            <div className='flex min-h-0 flex-1 items-center justify-center'>
-              <EmptyState
-                className='min-h-32'
-                description={t(
-                  'Describe an image or upload a reference to begin.'
-                )}
-                icon={Sparkles}
-                title={t('Start a new image')}
-              />
-            </div>
-          )}
-          <GenerationPanel
-            groups={groups}
-            inputPreview={inputPreview}
-            isGenerating={isGenerating}
-            isOptionsLoading={modelsQuery.isLoading || groupsQuery.isLoading}
-            isSessionReady={
-              Boolean(selectedSession) &&
-              !isRestoringAttachments &&
-              !isSavingAttachment
-            }
-            maskPreview={maskPreview}
-            models={models}
-            onGenerate={() => void handleGenerate()}
-            onInputImageChange={(file) => setUploadedFile(file, 'input')}
-            onMaskChange={(file) => setUploadedFile(file, 'mask')}
-            onParamChange={updateParams}
-            onRemoveInput={() => removeUploadedFile('input')}
-            onRemoveMask={() => removeUploadedFile('mask')}
-            params={params}
+    <section
+      aria-label={t('Image Studio')}
+      className='flex min-h-0 min-w-0 flex-1 flex-col'
+    >
+      <header className='shrink-0 border-b'>
+        <div className={cn(STUDIO_LANE, 'flex min-h-12 items-center')}>
+          <ImageStudioSessionMenu
+            disabled={isGenerating || isSavingAttachment || !selectedSession}
+            onCreate={handleNewSession}
+            onDelete={setDeleteTarget}
+            onRename={handleRename}
+            onSelect={(session) => {
+              if (session.id === selectedId) return
+              clearSessionImages()
+              setSelectedId(session.id)
+            }}
+            selectedId={selectedId}
+            sessions={visibleSessions}
+            triggerRef={sessionMenuTrigger}
           />
         </div>
-      </section>
+      </header>
+      {selectedSession?.messages.length || pendingMessage ? (
+        <Conversation key={selectedId}>
+          <ConversationContent className={cn(STUDIO_LANE, 'px-0 py-4 md:py-5')}>
+            <ImageHistory
+              assetUrls={assetUrls}
+              isGenerating={isGenerating}
+              messages={selectedSession?.messages ?? []}
+              pendingMessage={pendingMessage}
+              onDownload={(url, name) => void download(url, name)}
+              onRetry={retry}
+            />
+          </ConversationContent>
+          <ConversationScrollButton aria-label={t('Scroll to bottom')} />
+        </Conversation>
+      ) : (
+        <div className='flex min-h-0 flex-1 items-center justify-center'>
+          <EmptyState
+            className='min-h-0 border-0'
+            icon={Images}
+            title={t('Start a new image')}
+          />
+        </div>
+      )}
+      <div className={cn(STUDIO_LANE, 'shrink-0 pt-2 pb-3 md:pb-5')}>
+        <GenerationPanel
+          groups={groups}
+          inputPreview={inputPreview}
+          isGenerating={isGenerating}
+          isOptionsLoading={modelsQuery.isLoading || groupsQuery.isLoading}
+          isSessionReady={
+            Boolean(selectedSession) &&
+            !isRestoringAttachments &&
+            !isSavingAttachment
+          }
+          maskPreview={maskPreview}
+          models={models}
+          onGenerate={() => void handleGenerate()}
+          onInputImageChange={(file) => setUploadedFile(file, 'input')}
+          onMaskChange={(file) => setUploadedFile(file, 'mask')}
+          onParamChange={updateParams}
+          onRemoveInput={() => removeUploadedFile('input')}
+          onRemoveMask={() => removeUploadedFile('mask')}
+          params={params}
+        />
+      </div>
       <ConfirmDialog
         confirmText={t('Delete')}
         destructive
         desc={t('Delete this local session and its history?')}
+        finalFocus={sessionMenuTrigger}
         handleConfirm={() => void handleDelete()}
         onOpenChange={(open) => !open && setDeleteTarget(undefined)}
         open={Boolean(deleteTarget)}
         title={t('Delete session')}
       />
-    </div>
+    </section>
   )
 }

@@ -66,6 +66,15 @@ export type ImageStudioMessage = {
   results: Array<{ assetId?: string; url: string; name: string }>
 }
 
+/** A generation in progress with attachment previews already available to render. */
+export type ImageStudioPendingMessage = {
+  id: string
+  prompt: string
+  createdAt: number
+  inputPreview?: string
+  maskPreview?: string
+}
+
 /** A named local conversation containing image generation attempts. */
 export type ImageStudioSession = {
   id: string

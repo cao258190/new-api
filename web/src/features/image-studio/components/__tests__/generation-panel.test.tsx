@@ -7,10 +7,13 @@ the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 */
 import { fireEvent, render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { useState } from 'react'
 import { describe, expect, test, vi } from 'vitest'
 
 import type { ImageStudioParams } from '../../types'
 import { GenerationPanel } from '../generation-panel'
+import { ImageSettingsDialog } from '../image-settings-dialog'
 
 const params: ImageStudioParams = {
   model: 'gpt-image-1',
@@ -207,15 +210,69 @@ describe('image studio generation panel', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: '2k' }))
     expect(onParamChange).toHaveBeenCalledWith('size', '2048x2048')
 
-    fireEvent.click(within(dialog).getByRole('button', { name: '3 Images' }))
-    expect(onParamChange).toHaveBeenCalledWith('n', 3)
-
     fireEvent.change(within(dialog).getByLabelText('Custom image count'), {
       target: { value: '12' },
     })
     fireEvent.blur(within(dialog).getByLabelText('Custom image count'))
     expect(onParamChange).toHaveBeenCalledWith('n', 12)
   })
+
+  test.each([
+    {
+      group: 'Quality',
+      initial: 'Auto',
+      next: 'High',
+      key: 'quality',
+      value: 'high',
+    },
+    { group: 'Images', initial: '1', next: '3', key: 'n', value: 3 },
+  ])(
+    'keeps only the new $group choice selected after closing and reopening settings',
+    async ({ group, initial, next, key, value }) => {
+      const user = userEvent.setup()
+      const onParamChange = vi.fn()
+
+      function Settings() {
+        const [current, setCurrent] = useState(params)
+        return (
+          <ImageSettingsDialog
+            disabled={false}
+            onParamChange={(field, setting) => {
+              onParamChange(field, setting)
+              setCurrent((previous) => ({ ...previous, [field]: setting }))
+            }}
+            params={current}
+          />
+        )
+      }
+
+      render(<Settings />)
+      const trigger = screen.getByRole('button', { name: 'Image settings' })
+      await user.click(trigger)
+
+      const options = within(screen.getByRole('group', { name: group }))
+      expect(
+        options.getByRole('button', { name: initial, pressed: true })
+      ).toBeVisible()
+      const option = options.getByRole('button', { name: next, pressed: false })
+      option.focus()
+      await user.keyboard(' ')
+
+      expect(onParamChange).toHaveBeenCalledWith(key, value)
+      expect(option).toHaveAttribute('aria-pressed', 'true')
+      expect(options.getAllByRole('button', { pressed: true })).toEqual([
+        option,
+      ])
+      await user.click(screen.getByRole('button', { name: 'Done' }))
+      await user.click(trigger)
+      expect(
+        within(screen.getByRole('group', { name: group })).getByRole('button', {
+          name: next,
+          pressed: true,
+        })
+      ).toBeVisible()
+    }
+  )
 
   test('session controls stay disabled until local sessions finish loading', () => {
     render(

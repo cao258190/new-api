@@ -6,217 +6,243 @@ it under the terms of the GNU Affero General Public License as published by
 the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 */
-import { Download, RotateCcw } from 'lucide-react'
-import { useState } from 'react'
+import {
+  CircleAlert,
+  CircleCheck,
+  Download,
+  Loader2,
+  Maximize2,
+  RotateCcw,
+} from 'lucide-react'
+import { useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
-import { Loader } from '@/components/ai-elements/loader'
-import { Message, MessageContent } from '@/components/ai-elements/message'
-import { Shimmer } from '@/components/ai-elements/shimmer'
-import { Dialog } from '@/components/dialog'
+import { CopyButton } from '@/components/copy-button'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { toIntlLocale } from '@/i18n/languages'
+import { formatNumber } from '@/lib/format'
 import { translateServerText } from '@/lib/server-error-message'
+import { cn } from '@/lib/utils'
 
-import type { ImageStudioMessage } from '../types'
+import type { ImageStudioMessage, ImageStudioPendingMessage } from '../types'
+import { ImageViewer } from './image-viewer'
 
 type ImageHistoryProps = {
   messages: ImageStudioMessage[]
-  pendingMessage?: {
-    id: string
-    prompt: string
-    inputPreview?: string
-    maskPreview?: string
-  }
+  pendingMessage?: ImageStudioPendingMessage
   assetUrls: Record<string, string>
   isGenerating: boolean
   onDownload: (url: string, name: string) => void
   onRetry: (message: ImageStudioMessage) => void
 }
 
-/** Show prompts on the right and generated images on the left. */
+/** Group each prompt, its attachments, and its results or failure in one batch. */
 export function ImageHistory(props: ImageHistoryProps) {
-  const { t } = useTranslation()
-  const [preview, setPreview] = useState<{ url: string; alt: string }>()
+  const { t, i18n } = useTranslation()
+  const [preview, setPreview] = useState<{ messageId: string; index: number }>()
+  const imageTrigger = useRef<HTMLButtonElement>(null)
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+  const clock = useMemo(
+    () =>
+      new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit' }),
+    [locale]
+  )
+  const attempts = props.pendingMessage
+    ? [...props.messages, props.pendingMessage]
+    : props.messages
+  const getImageUrl = (result: ImageStudioMessage['results'][number]): string =>
+    (result.assetId && props.assetUrls[result.assetId]) || result.url
+  const previewBatch = preview
+    ? props.messages.find((message) => message.id === preview.messageId)
+    : undefined
 
   return (
-    <div className='space-y-6'>
-      {props.messages.map((message) => (
-        <div className='space-y-3' key={message.id}>
-          <Message aria-label={t('Prompt')} from='user' role='group'>
-            <MessageContent className='max-w-[85%] break-words whitespace-pre-wrap'>
-              {message.prompt}
-              {(message.inputAssetId || message.maskAssetId) && (
-                <div className='mt-2 flex flex-wrap gap-2'>
-                  {[message.inputAssetId, message.maskAssetId].map(
-                    (assetId, index) => {
-                      if (!assetId) return null
-                      const src = props.assetUrls[assetId]
-                      if (!src) return null
-                      return (
-                        <img
-                          alt={
-                            index === 0 ? t('Reference image') : t('Mask image')
-                          }
-                          className='size-16 rounded-md object-cover'
-                          key={assetId}
-                          src={src}
-                        />
-                      )
-                    }
-                  )}
-                </div>
-              )}
-            </MessageContent>
-          </Message>
-          <Message
-            aria-label={t('Image preview')}
-            from='assistant'
-            role='group'
+    <div className='divide-y'>
+      {attempts.map((attempt) => {
+        const message = 'results' in attempt ? attempt : undefined
+        const pending = !message
+        const failed = message?.status === 'error'
+        let StatusIcon = CircleCheck
+        let status = t('Completed')
+        if (pending) {
+          StatusIcon = Loader2
+          status = t('Generating...')
+        } else if (failed) {
+          StatusIcon = CircleAlert
+          status = t('Generation failed')
+        }
+
+        const date = new Date(attempt.createdAt)
+        const hasDate = Number.isFinite(date.getTime())
+        const photos = message?.results ?? []
+        const attachments =
+          'results' in attempt
+            ? [
+                attempt.inputAssetId && props.assetUrls[attempt.inputAssetId],
+                attempt.maskAssetId && props.assetUrls[attempt.maskAssetId],
+              ]
+            : [attempt.inputPreview, attempt.maskPreview]
+
+        return (
+          <article
+            aria-label={attempt.prompt}
+            className='min-w-0 space-y-2 py-3 first:pt-0 last:pb-0'
+            key={attempt.id}
           >
-            <div className='w-full min-w-0 space-y-3'>
-              {message.status === 'error' ? (
-                <div className='flex flex-wrap items-center justify-between gap-3'>
-                  <p className='text-destructive text-sm'>
-                    {translateServerText(
-                      t,
-                      message.error ?? 'Generation failed'
-                    )}
-                  </p>
-                  <Button
-                    disabled={props.isGenerating}
-                    onClick={() => props.onRetry(message)}
-                    variant='outline'
+            <div className='flex items-start justify-between gap-2'>
+              <div className='flex min-w-0 flex-wrap items-center gap-2'>
+                <Badge
+                  aria-label={pending ? status : undefined}
+                  className={cn(
+                    !pending && !failed && 'bg-success/10 text-success'
+                  )}
+                  role={pending ? 'status' : undefined}
+                  variant={failed ? 'destructive' : 'secondary'}
+                >
+                  <StatusIcon
+                    aria-hidden='true'
+                    className={pending ? 'motion-safe:animate-spin' : undefined}
+                  />
+                  {status}
+                </Badge>
+                {hasDate && (
+                  <time
+                    className='text-muted-foreground text-xs tabular-nums'
+                    dateTime={date.toISOString()}
                   >
-                    <RotateCcw />
-                    {t('Retry')}
-                  </Button>
-                </div>
+                    {clock.format(date)}
+                  </time>
+                )}
+              </div>
+              {failed ? (
+                <Button
+                  disabled={props.isGenerating}
+                  onClick={() => props.onRetry(message)}
+                  size='sm'
+                  variant='outline'
+                >
+                  <RotateCcw aria-hidden='true' />
+                  {t('Retry')}
+                </Button>
               ) : (
-                <div className='grid grid-cols-2 gap-3 md:grid-cols-4'>
-                  {message.results.map((result) => {
-                    const src = result.assetId
-                      ? (props.assetUrls[result.assetId] ?? result.url)
-                      : result.url
-                    return (
-                      <div
-                        className='group relative overflow-hidden rounded-lg border'
-                        key={result.assetId ?? result.url}
-                      >
-                        <button
-                          aria-label={t('Preview image')}
-                          className='block w-full cursor-zoom-in'
-                          onClick={() =>
-                            setPreview({ url: src, alt: message.prompt })
-                          }
-                          type='button'
-                        >
-                          <img
-                            alt={message.prompt}
-                            className='aspect-square w-full object-cover'
-                            loading='lazy'
-                            src={src}
-                          />
-                        </button>
-                        <Button
-                          aria-label={t('Download image')}
-                          className='absolute right-2 bottom-2 opacity-100 focus-visible:opacity-100 md:opacity-0 md:group-hover:opacity-100'
-                          onClick={() => props.onDownload(src, result.name)}
-                          size='icon-sm'
-                        >
-                          <Download />
-                        </Button>
-                      </div>
-                    )
-                  })}
-                </div>
+                <CopyButton
+                  className='text-muted-foreground size-7'
+                  tooltip={t('Copy prompt')}
+                  value={attempt.prompt}
+                />
               )}
-              {message.results.length > 1 && message.status === 'complete' && (
+            </div>
+            <p className='text-sm leading-6 [overflow-wrap:anywhere] whitespace-pre-wrap'>
+              {attempt.prompt}
+            </p>
+            {attachments.some(Boolean) && (
+              <div className='flex flex-wrap gap-2'>
+                {attachments[0] && (
+                  <img
+                    alt={t('Reference image')}
+                    className='size-16 rounded-md object-cover'
+                    loading='lazy'
+                    src={attachments[0]}
+                  />
+                )}
+                {attachments[1] && (
+                  <img
+                    alt={t('Mask image')}
+                    className='size-16 rounded-md object-cover'
+                    loading='lazy'
+                    src={attachments[1]}
+                  />
+                )}
+              </div>
+            )}
+            {failed && (
+              <p className='text-destructive text-sm [overflow-wrap:anywhere]'>
+                {translateServerText(t, message.error ?? 'Generation failed')}
+              </p>
+            )}
+            {!failed && photos.length > 0 && (
+              <>
+                <div className='flex flex-wrap gap-2.5'>
+                  {photos.map((photo, index) => (
+                    <Button
+                      aria-label={
+                        photos.length === 1
+                          ? t('Preview image')
+                          : t('Preview image {{number}}', {
+                              number: formatNumber(index + 1, locale),
+                            })
+                      }
+                      className={cn(
+                        'group relative block h-auto max-w-full cursor-zoom-in overflow-hidden border-0 p-0 hover:bg-transparent',
+                        photos.length > 1 && 'max-w-[calc(50%-0.3125rem)]'
+                      )}
+                      key={photo.assetId ?? index}
+                      onClick={(event) => {
+                        imageTrigger.current = event.currentTarget
+                        setPreview({ messageId: attempt.id, index })
+                      }}
+                      size='sm'
+                      title={t('Preview image')}
+                      variant='ghost'
+                    >
+                      <img
+                        alt={t('Generated image')}
+                        className={cn(
+                          'h-auto w-auto max-w-full object-contain',
+                          photos.length === 1
+                            ? 'max-h-[clamp(12rem,45svh,28rem)]'
+                            : 'max-h-[clamp(8rem,29svh,17.5rem)]'
+                        )}
+                        loading='lazy'
+                        src={getImageUrl(photo)}
+                      />
+                      <span
+                        aria-hidden='true'
+                        className='text-foreground bg-background/90 absolute end-2 top-2 grid size-7 place-items-center rounded-md opacity-90 group-hover:opacity-100'
+                      >
+                        <Maximize2 className='size-3.5' />
+                      </span>
+                    </Button>
+                  ))}
+                </div>
                 <Button
                   onClick={() =>
-                    message.results.forEach((result) => {
-                      const src = result.assetId
-                        ? (props.assetUrls[result.assetId] ?? result.url)
-                        : result.url
-                      props.onDownload(src, result.name)
-                    })
+                    photos.forEach((photo) =>
+                      props.onDownload(getImageUrl(photo), photo.name)
+                    )
                   }
                   size='sm'
                   variant='outline'
                 >
-                  <Download />
-                  {t('Download all images')}
+                  <Download aria-hidden='true' />
+                  {photos.length === 1
+                    ? t('Download')
+                    : t('Download all images')}
                 </Button>
-              )}
-              {message.revisedPrompt && (
-                <p className='text-muted-foreground text-xs'>
-                  {t('Revised prompt')}: {message.revisedPrompt}
-                </p>
-              )}
-            </div>
-          </Message>
-        </div>
-      ))}
-      {props.pendingMessage && (
-        <div className='space-y-3' key={props.pendingMessage.id}>
-          <Message aria-label={t('Prompt')} from='user' role='group'>
-            <MessageContent className='max-w-[85%] break-words whitespace-pre-wrap'>
-              {props.pendingMessage.prompt}
-              {(props.pendingMessage.inputPreview ||
-                props.pendingMessage.maskPreview) && (
-                <div className='mt-2 flex flex-wrap gap-2'>
-                  {props.pendingMessage.inputPreview && (
-                    <img
-                      alt={t('Reference image')}
-                      className='size-16 rounded-md object-cover'
-                      src={props.pendingMessage.inputPreview}
-                    />
-                  )}
-                  {props.pendingMessage.maskPreview && (
-                    <img
-                      alt={t('Mask image')}
-                      className='size-16 rounded-md object-cover'
-                      src={props.pendingMessage.maskPreview}
-                    />
-                  )}
-                </div>
-              )}
-            </MessageContent>
-          </Message>
-          <Message
-            aria-label={t('Image preview')}
-            from='assistant'
-            role='group'
-          >
-            <div
-              aria-label={t('Generating...')}
-              aria-live='polite'
-              className='w-full min-w-0 space-y-3'
-              role='status'
-            >
-              <div className='text-muted-foreground flex items-center gap-2 text-sm'>
-                <Loader />
-                <Shimmer className='text-sm'>{t('Generating...')}</Shimmer>
-              </div>
-              <div className='bg-muted/60 aspect-square w-full max-w-xs animate-pulse rounded-xl' />
-            </div>
-          </Message>
-        </div>
-      )}
-      <Dialog
-        contentClassName='sm:max-w-5xl'
-        onOpenChange={(open) => !open && setPreview(undefined)}
-        open={Boolean(preview)}
-        showCloseButton
-        title={t('Image preview')}
-      >
-        {preview && (
-          <img
-            alt={preview.alt}
-            className='mx-auto max-h-[75dvh] max-w-full object-contain'
-            src={preview.url}
-          />
-        )}
-      </Dialog>
+              </>
+            )}
+            {message?.revisedPrompt && (
+              <p className='text-muted-foreground text-xs [overflow-wrap:anywhere]'>
+                {t('Revised prompt')}: {message.revisedPrompt}
+              </p>
+            )}
+          </article>
+        )
+      })}
+      <ImageViewer
+        index={preview?.index ?? 0}
+        onClose={() => setPreview(undefined)}
+        onDownload={props.onDownload}
+        onSelect={(index) =>
+          setPreview((current) => current && { ...current, index })
+        }
+        photos={previewBatch?.results.map((photo) => ({
+          ...photo,
+          url: getImageUrl(photo),
+        }))}
+        triggerRef={imageTrigger}
+      />
     </div>
   )
 }
